@@ -33,7 +33,7 @@ jobs:
           sh web/build.sh --no-server-assets
           # (Pages compresses on its own: no .gz / .br copies)
           mkdir -p site/pkg
-          cp web/index.html web/store_worker.js web/preload.json site/
+          cp web/index.html web/store_worker.js web/sw.js web/manifest.webmanifest web/preload.json site/
           find web/pkg -maxdepth 1 -type f ! -name '*.gz' ! -name '*.br' -exec cp {} site/pkg/ \;
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5

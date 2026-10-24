@@ -29,8 +29,9 @@ if not defined version (echo no version for the build ^(Get-FileHash^) & exit /b
 powershell -NoProfile -Command "[IO.File]::WriteAllText('web\pkg\version.txt', '%version%' + [char]10)" || exit /b 1
 rem the page's settings (index.html)
 >web\pkg\config.json echo {"serverAssets": %server_assets%}
-rem the page's icon
+rem the page's icons (the tab's, and the installed game's: packaging/icons.sh)
 copy /y packaging\openkumite.svg web\pkg\ >nul || exit /b 1
+copy /y packaging\web\*.png web\pkg\ >nul || exit /b 1
 rem (PowerShell 7 when there is one: it also makes the brotli copies)
 set ps=powershell
 where pwsh >nul 2>&1 && set ps=pwsh

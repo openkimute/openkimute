@@ -9,6 +9,10 @@
 <title>OpenKumite</title>
 <!-- the icon (packaging/openkumite.svg, copied in by web/build.sh) -->
 <link rel="icon" type="image/svg+xml" href="pkg/openkumite.svg">
+<!-- installable (a PWA): the manifest, its icons (packaging/web, made by packaging/icons.sh), sw.js for offline -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="pkg/apple-touch-icon.png">
+<meta name="theme-color" content="#000000">
 <style>
   html, body { margin: 0; height: 100%; height: 100dvh; background: #000; overflow: hidden; }
   body { display: flex; align-items: center; justify-content: center; }
@@ -83,6 +87,8 @@
 <script type="module">
   // a failure shows on the page, not only in the console
   const fail = (m) => { document.getElementById('error').textContent += `${m}\n`; };
+  // the service worker (sw.js): the installed game starts offline too (none on a page without https or localhost)
+  navigator.serviceWorker?.register('sw.js').catch((e) => console.warn(`no offline copy: ${e}`));
   addEventListener('error', (e) => fail(e.message));
   addEventListener('unhandledrejection', (e) => fail(e.reason));
   const log = console.error;

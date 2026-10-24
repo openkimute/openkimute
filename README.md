@@ -106,6 +106,12 @@ https://openkimute.github.io/openkimute/. kumite_converter's browser page at
 https://openkimute.github.io/kumite_converter/ is on the same site, so a game it converts there is found by the
 game's page directly.
 
+The page is a PWA: the browser offers to install it (Chrome and Edge: the install icon in the address bar; Android:
+**Add to Home screen**; iPhone and iPad: Share → **Add to Home Screen**), and the installed game opens full screen.
+Its service worker (`web/sw.js`) keeps the page and the game itself, so after one visit online it also starts
+offline. The game data is never in that cache: it stays the copy the browser keeps. The install icons are in
+`packaging/web/`, made from the SVG by `sh packaging/icons.sh`.
+
 ## Online play
 
 Players meet in a room on a [matchbox](https://github.com/johanhelsing/matchbox) signalling server and connect

@@ -26,7 +26,7 @@ version=${version%% *}
 printf '%s\n' "$version" | cut -c1-16 > web/pkg/version.txt
 # the page's settings (index.html)
 printf '{"serverAssets": %s}\n' "$server_assets" > web/pkg/config.json
-# the page's icon
-cp packaging/openkumite.svg web/pkg/
+# the page's icons (the tab's, and the installed game's: packaging/icons.sh)
+cp packaging/openkumite.svg packaging/web/*.png web/pkg/
 sh web/compress.sh
 echo "built web/pkg ($profile); serve with web/serve.sh"

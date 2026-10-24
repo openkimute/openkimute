@@ -1,0 +1,20 @@
+{
+  "id": "./",
+  "name": "OpenKumite",
+  "short_name": "OpenKumite",
+  "description": "3D fighting game engine: plays the game data you convert from your own disc",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "categories": ["games"],
+  "icons": [
+    { "src": "pkg/openkumite.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "pkg/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "pkg/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "pkg/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
