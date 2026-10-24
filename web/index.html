@@ -19,9 +19,8 @@
   canvas { width: 960px; height: 720px; outline: none; }
   #error a { color: #fff; }
   #error { position: fixed; top: 16px; left: 16px; right: 16px; color: #f66; font: 14px monospace; white-space: pre-wrap; z-index: 3; }
-  /* below the picture: the game data this browser keeps, and the controls */
+  /* below the picture: the controls */
   #foot { position: fixed; bottom: 8px; width: 100%; text-align: center; color: #888; font: 13px sans-serif; }
-  #data a { color: #bbb; }
   /* full screen (the browser's, or the game's): the picture alone */
   @media (display-mode: fullscreen) { #foot { display: none; } }
   :root:fullscreen #foot, body:has(:fullscreen) #foot { display: none; }
@@ -55,16 +54,112 @@
   #tip { display: none; position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 3; max-width: 80%;
          padding: 8px 14px; border-radius: 10px; font: 13px sans-serif; color: #eee; background: rgba(0,0,0,.75);
          border: 1px solid rgba(255,255,255,.4); text-align: center; }
-  #loading, #store { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 40%; color: #aaa;
+  #loading { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 40%; color: #aaa;
              font: 13px sans-serif; text-align: center; }
-  #loading .bar, #store .bar { margin-top: 8px; height: 4px; background: #333; }
-  #loading .fill, #store .fill { height: 100%; width: 0; background: #ccc; }
-  #store { z-index: 6; }
-  /* a folder dragged over the page */
-  #drop { position: fixed; inset: 12px; z-index: 6; display: flex; align-items: center; justify-content: center;
-          border: 3px dashed #aaa; border-radius: 16px; background: rgba(0,0,0,.8); color: #eee; font: 20px sans-serif;
-          pointer-events: none; }
+  #loading .bar { margin-top: 8px; height: 4px; background: #333; }
+  #loading .fill { height: 100%; width: 0; background: #ccc; }
+
+  /* ---- the game data: the setup (no game yet, or a copy under way), the drop over the game, the data dialog.
+     The icon's colours (packaging/openkumite.svg): its tile, its sun, the K's cream, the spark's gold. */
+  @font-face { font-family: 'Big Shoulders'; src: url('fonts/big-shoulders-display.woff2') format('woff2');
+               font-weight: 100 900; font-display: swap; }
+  :root { --tile: #26262f; --ink: #0d0d12; --sun: #e2321f; --sun-hi: #ff6a3d; --sun-lo: #a9160f; --paper: #f5f0e6;
+          --spark: #ffd166; --ash: #a39fae; --line: rgba(245, 240, 230, .16);
+          --display: 'Big Shoulders', 'Arial Narrow', sans-serif; --text: system-ui, -apple-system, 'Segoe UI', sans-serif; }
+  .btn { font: 600 15px/1 var(--text); padding: 12px 20px; border-radius: 999px; border: 1px solid var(--line);
+         background: transparent; color: var(--paper); cursor: pointer; transition: background .15s, border-color .15s; }
+  .btn:hover { border-color: rgba(245, 240, 230, .5); }
+  .btn:focus-visible, #setup a:focus-visible, #data-btn:focus-visible { outline: 3px solid var(--spark); outline-offset: 3px; }
+  .btn.primary { background: var(--paper); color: var(--sun-lo); border-color: transparent; }
+  .btn.primary:hover { background: #fff; }
+  .btn.danger { color: #ff9a85; border-color: rgba(255, 106, 61, .45); }
+  .btn.danger.solid { background: var(--sun); color: var(--paper); border-color: transparent; }
+  .btn.danger.solid:hover { background: var(--sun-hi); }
+
+  #setup { position: fixed; inset: 0; z-index: 7; overflow: auto; display: grid; place-items: center; padding: 40px 24px;
+           color: var(--paper); font: 16px/1.55 var(--text);
+           background: radial-gradient(120% 90% at 28% 38%, var(--tile) 0%, var(--ink) 62%); }
+  #setup[hidden] { display: none; }
+  .stage { display: grid; grid-template-columns: auto minmax(0, 31rem); gap: clamp(40px, 7vw, 96px); align-items: center; }
+  /* the sun: where the folder goes, and the copy's progress around it */
+  .sun { --d: clamp(230px, min(32vw, 58vh), 340px); position: relative; width: var(--d); height: var(--d); border-radius: 50%;
+         display: grid; place-items: center; text-align: center;
+         background: radial-gradient(circle at 42% 36%, var(--sun-hi), var(--sun) 65%, var(--sun-lo));
+         box-shadow: 0 30px 90px -24px rgba(226, 50, 31, .55); transition: transform .25s ease, box-shadow .25s ease; }
+  .sun.over { transform: scale(1.05); box-shadow: 0 0 0 14px rgba(255, 209, 102, .16), 0 30px 100px -12px rgba(226, 50, 31, .8); }
+  .ring { position: absolute; inset: -20px; width: calc(100% + 40px); height: calc(100% + 40px); transform: rotate(-90deg);
+          overflow: visible; pointer-events: none; }
+  .ring circle { fill: none; stroke-width: 1; }
+  .ring .track { stroke: rgba(245, 240, 230, .32); stroke-dasharray: .004 .012; stroke-linecap: round; transition: stroke .25s; }
+  .sun.over .ring .track { stroke: var(--spark); }
+  .ring .arc { stroke: var(--spark); stroke-dasharray: 1; stroke-dashoffset: 1; stroke-linecap: round; transition: stroke-dashoffset .3s ease; }
+  .ring .arc { opacity: 0; }
+  #setup[data-state="copying"] .ring .arc { opacity: 1; }
+  #setup[data-state="copying"] .ring .track { stroke-dasharray: none; stroke: rgba(245, 240, 230, .12); }
+  .sun-face { padding: 0 15%; }
+  .sun-main { margin: 0; font: 700 clamp(28px, 3.2vw, 36px)/1 var(--display); letter-spacing: .01em; }
+  .sun-sub { margin: 10px 0 18px; font-size: 14px; color: rgba(245, 240, 230, .82); }
+  #setup[data-state="copying"] .sun-main { font-size: clamp(48px, 6vw, 68px); font-variant-numeric: tabular-nums; }
+  #setup[data-state="copying"] .sun-sub { margin-bottom: 0; }
+  #setup h1 { margin: 0 0 18px; font: 800 clamp(56px, 8.5vw, 108px)/.88 var(--display); letter-spacing: -.005em; }
+  .lede { margin: 0 0 28px; max-width: 34em; color: #d6d1dc; font-size: 17px; }
+  #setup a { color: var(--paper); text-decoration-color: var(--sun-hi); text-underline-offset: 3px; }
+  .steps { list-style: none; counter-reset: step; margin: 0; padding: 0; color: var(--ash); }
+  .steps li { counter-increment: step; position: relative; padding: 0 0 14px 44px; }
+  .steps li::before { content: counter(step); position: absolute; left: 0; top: -.2em; width: 28px; text-align: center;
+                      font: 700 26px/1.2 var(--display); color: var(--spark); }
+  .steps b { color: var(--paper); font-weight: 600; }
+  #setup[data-state="copying"] .steps li:nth-child(-n+2) { opacity: .45; }
+  .msg { margin: 18px 0 0; padding: 12px 16px; border-left: 3px solid var(--sun-hi); background: rgba(226, 50, 31, .14);
+         border-radius: 0 10px 10px 0; color: var(--paper); font-size: 15px; }
+  .msg[hidden], #setup .btn[hidden] { display: none; }
+  #setup-close { margin-top: 22px; }
+  @media (max-width: 760px) {
+    #setup { place-items: start center; }
+    .stage { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 44px; }
+    .copy { order: -1; }
+    #setup h1 { font-size: 64px; }
+  }
+
+  /* a folder dragged over the game */
+  #drop { position: fixed; inset: 0; z-index: 8; display: grid; place-items: center; pointer-events: none;
+          background: rgba(13, 13, 18, .84); backdrop-filter: blur(6px); color: var(--paper); font: 16px var(--text); }
   #drop[hidden] { display: none; }
+  #drop .sun { --d: 260px; }
+
+  /* the data this browser keeps: a button over the game, its dialog */
+  #data-btn { position: fixed; top: 12px; right: 16px; z-index: 3; display: inline-flex; align-items: center; gap: 8px;
+              padding: 7px 14px 7px 9px; border-radius: 999px; border: 1px solid var(--line); cursor: pointer;
+              background: rgba(13, 13, 18, .72); color: var(--paper); font: 500 13px/1 var(--text); opacity: .55;
+              transition: opacity .2s; }
+  #data-btn::before { content: ''; width: 13px; height: 13px; border-radius: 50%;
+                      background: radial-gradient(circle at 42% 36%, var(--sun-hi), var(--sun) 65%, var(--sun-lo)); }
+  #data-btn:hover, #data-btn:focus-visible { opacity: 1; }
+  #data-btn[hidden] { display: none; }
+  @media (display-mode: fullscreen) { #data-btn { display: none; } }
+  :root:fullscreen #data-btn, body:has(:fullscreen) #data-btn, body.touch #data-btn { display: none; }
+  #data-dialog { width: min(440px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line); border-radius: 22px;
+                 color: var(--paper); font: 15px/1.5 var(--text); background: linear-gradient(170deg, var(--tile), #15151c 70%);
+                 box-shadow: 0 40px 120px -20px #000; }
+  #data-dialog::backdrop { background: rgba(5, 5, 8, .6); backdrop-filter: blur(3px); }
+  .dd { padding: 22px 24px 26px; }
+  .dd header { display: flex; align-items: center; justify-content: space-between; }
+  .dd h2 { margin: 0; font: 700 28px/1 var(--display); letter-spacing: .01em; }
+  .dd .x { width: 36px; height: 36px; padding: 0; font-size: 20px; line-height: 1; }
+  .dd-size { margin: 22px 0 4px; color: var(--ash); }
+  .dd-size b { display: block; font: 800 64px/.95 var(--display); color: var(--paper); font-variant-numeric: tabular-nums; }
+  .dd-keep { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 14px 0 0; color: var(--ash); }
+  .dd-keep i { width: 8px; height: 8px; border-radius: 50%; background: var(--ash); flex: none; }
+  .dd-keep.kept i { background: var(--spark); box-shadow: 0 0 10px var(--spark); }
+  .dd-keep .btn { padding: 8px 14px; font-size: 13px; }
+  .dd-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 24px; }
+  .dd-actions[hidden], .dd-confirm[hidden] { display: none; }
+  .dd-confirm { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--line); }
+  .dd-confirm p { margin: 0; }
+  .dd-confirm .dd-actions { margin-top: 16px; }
+  @media (prefers-reduced-motion: reduce) {
+    .sun, .ring .arc, .ring .track, .btn, #data-btn { transition: none; }
+  }
   #log { display: none; position: fixed; left: 0; top: 0; width: 55%; max-height: 60%; overflow: auto; z-index: 5;
          font: 10px monospace; color: #cfc; background: rgba(0,0,0,.75); white-space: pre-wrap; pointer-events: none; }
 </style>
@@ -72,7 +167,6 @@
 <body>
 <div id="error"></div>
 <div id="foot">
-  <div id="data" hidden></div>
   <div id="hint">Click the picture for keyboard and sound · arrows / WASD, U I J K (1 2 3 4), Enter = START, Esc = back · gamepads · OPTION &gt; KEY CONFIGURATION / KEYBOARD</div>
 </div>
 <div id="pad">
@@ -82,7 +176,56 @@
 <div id="rotate">Turn the device sideways to play</div>
 <div id="tip">For full screen: Share &rarr; Add to Home Screen, then play from the icon</div>
 <div id="log"></div>
-<div id="drop" hidden>Drop the converted game folder to keep it in this browser</div>
+<section id="setup" hidden aria-labelledby="setup-title">
+  <div class="stage">
+    <div class="sun" id="sun">
+      <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+        <circle class="track" cx="50" cy="50" r="49" pathLength="1"/>
+        <circle class="arc" id="arc" cx="50" cy="50" r="49" pathLength="1"/>
+      </svg>
+      <div class="sun-face" aria-live="polite">
+        <p class="sun-main" id="sun-main">Drop the folder here</p>
+        <p class="sun-sub" id="sun-sub">or</p>
+        <button class="btn primary" id="pick" type="button">Choose folder</button>
+      </div>
+    </div>
+    <div class="copy">
+      <h1 id="setup-title">OpenKumite</h1>
+      <p class="lede">Play the game you own. Give this page the folder
+        <a href="https://github.com/openkimute/kumite_converter">kumite_converter</a> made from your disc: the browser
+        copies it once and keeps it for every visit after.</p>
+      <ol class="steps">
+        <li><b>Convert</b> your disc with kumite_converter.</li>
+        <li><b>Drop</b> the folder it wrote, the one with manifest.json.</li>
+        <li><b>Play</b>, offline too once the copy is done.</li>
+      </ol>
+      <p class="msg" id="msg" role="alert" hidden></p>
+      <button class="btn" id="setup-close" type="button" hidden>Back to the game</button>
+    </div>
+  </div>
+</section>
+<div id="drop" hidden>
+  <div class="sun"><div class="sun-face"><p class="sun-main">Drop to replace the game data</p></div></div>
+</div>
+<button id="data-btn" type="button" hidden>Game data</button>
+<dialog id="data-dialog" aria-labelledby="dd-title">
+  <form method="dialog" class="dd">
+    <header><h2 id="dd-title">Game data</h2><button class="btn x" value="close" aria-label="Close">×</button></header>
+    <p class="dd-size"><b id="dd-size"></b>kept in this browser</p>
+    <p class="dd-keep" id="dd-keep"></p>
+    <div class="dd-actions" id="dd-actions">
+      <button type="button" class="btn" id="dd-replace">Replace with another folder</button>
+      <button type="button" class="btn danger" id="dd-remove">Remove</button>
+    </div>
+    <div class="dd-confirm" id="dd-confirm" hidden>
+      <p id="dd-question"></p>
+      <div class="dd-actions">
+        <button type="button" class="btn danger solid" id="dd-yes">Remove game data</button>
+        <button type="button" class="btn" id="dd-no">Cancel</button>
+      </div>
+    </div>
+  </form>
+</dialog>
 <div id="loading">LOADING<div class="bar"><div class="fill"></div></div></div>
 <script type="module">
   // a failure shows on the page, not only in the console
@@ -481,66 +624,92 @@
     return all.filter(([p]) => p.startsWith(base)).map(([p, f]) => [p.slice(base.length), f])
       .filter(([p]) => !/(^|\/)\./.test(p) && !/\.(gz|br)$/.test(p));
   };
+  const $ = (id) => document.getElementById(id);
+  const setup = $('setup');
+  // the game started: the setup comes over it only for a copy, and can go back to it
+  let playing = false;
+  const message = (m) => { $('msg').textContent = m ?? ''; $('msg').hidden = !m; };
+  const face = (main, sub) => { $('sun-main').textContent = main; $('sun-sub').textContent = sub; };
+  // the setup waiting for a folder (shown, if not yet)
+  const idle = () => {
+    setup.hidden = false;
+    setup.dataset.state = 'idle';
+    $('arc').style.strokeDashoffset = 1;
+    // (a touch screen drags no folders)
+    const touch = matchMedia('(pointer: coarse)').matches;
+    face(!storable ? 'This browser can’t keep game data' : touch ? 'Choose the folder' : 'Drop the folder here', storable && !touch ? 'or' : '');
+    $('pick').hidden = !storable;
+    $('setup-close').hidden = !playing;
+    if (!storable) message('Private windows don’t let a page store files. Open this page in a normal window.');
+  };
   let storing = false;
   // `persisted`: the browser asked to keep the site's storage, from the drop or the click (Firefox asks the user)
   const store = async (all, persisted) => {
     if (storing) return;
-    if (!storable) return fail('This browser cannot keep the game (no storage for sites: a private window?).');
+    if ($('data-dialog').open) $('data-dialog').close();
+    idle();
+    message(null);
+    if (!storable) return idle();
     const files = converted(all);
-    if (!files) return fail('No converted game in that (no manifest.json): drop the folder kumite_converter wrote.');
+    if (!files) return message('That folder has no manifest.json, so it isn’t a converted game. Drop the folder kumite_converter wrote.');
     storing = true;
-    const box = document.createElement('div');
-    box.id = 'store';
-    box.innerHTML = '<span></span><div class="bar"><div class="fill"></div></div>';
-    const say = (m) => { box.firstChild.textContent = m; };
-    // (the page's questions away meanwhile)
-    const error = document.getElementById('error');
-    error.hidden = true;
-    const done = (m) => { storing = false; box.remove(); error.hidden = false; if (m) fail(m); };
-    document.body.append(box);
-    say('CHECKING THE SPACE');
+    setup.dataset.state = 'copying';
+    $('pick').hidden = $('setup-close').hidden = true;
+    face('Checking space', '');
+    const done = (m) => { storing = false; idle(); message(m); };
     const need = files.reduce((a, [, f]) => a + f.size, 0);
     const old = (await stored())?.size ?? 0;
     const room = async () => { const { quota = 0, usage = 0 } = await navigator.storage.estimate(); return quota - usage + old; };
     // (a site's storage grows when the browser keeps it: asked again after its answer)
     if ((await room()) < need) await persisted;
-    if ((await room()) < need) return done(`Not enough space for the game in this browser: it needs ${gb(need)} GB, there is ${gb(await room())} GB.`);
-    const fill = box.querySelector('.fill');
+    if ((await room()) < need) return done(`Not enough space: the game needs ${gb(need)} GB and this browser has ${gb(await room())} GB free for this site. Free some disk space, then try again.`);
+    const show = (got) => {
+      face(`${gb(got)} GB`, `of ${gb(need)} GB copied`);
+      $('arc').style.strokeDashoffset = 1 - got / need;
+    };
     const worker = new Worker('store_worker.js');
     const result = await new Promise((ok) => {
-      worker.onmessage = ({ data }) => {
-        if (data.progress === undefined) return ok(data);
-        say(`KEEPING THE GAME IN THIS BROWSER: ${gb(data.progress)} OF ${gb(need)} GB`);
-        fill.style.width = `${100 * data.progress / need}%`;
-      };
+      worker.onmessage = ({ data }) => (data.progress === undefined ? ok(data) : show(data.progress));
       worker.onerror = (e) => ok({ error: e.message });
-      say(`KEEPING THE GAME IN THIS BROWSER: 0.00 OF ${gb(need)} GB`);
+      show(0);
       worker.postMessage({ files });
     });
     worker.terminate();
-    if (result.error) return done(result.quota ? `Not enough space for the game in this browser (${gb(need)} GB).` : `The game could not be kept in this browser (${result.error}).`);
+    if (result.error) {
+      return done(result.quota ? `Not enough space for the game (${gb(need)} GB). Free some disk space, then try again.`
+        : `The copy stopped: ${result.error}. Nothing was kept; try again.`);
+    }
     console.info(`kept ${files.length} files, ${gb(result.done)} GB`);
+    show(need);
+    face('Ready', 'Starting the game');
     // (the kept copy replaces a folder remembered before)
     await idb('delete', 'folder').catch(() => {});
     location.reload();
   };
   const ask = () => navigator.storage?.persist?.().catch(() => false);
-  const drop = document.getElementById('drop');
+  const drop = $('drop');
+  // over the setup the sun lights up; over the game, the drop's own layer
+  const over = (on) => {
+    if (!setup.hidden) { $('sun').classList.toggle('over', on); drop.hidden = true; } else drop.hidden = !on;
+  };
   addEventListener('dragover', (e) => {
     if (storing || !e.dataTransfer?.types.includes('Files')) return;
     e.preventDefault();
-    drop.hidden = false;
+    over(true);
   });
-  addEventListener('dragleave', (e) => { if (!e.relatedTarget) drop.hidden = true; });
+  addEventListener('dragleave', (e) => { if (!e.relatedTarget) over(false); });
   addEventListener('drop', async (e) => {
     if (!e.dataTransfer?.types.includes('Files')) return;
     e.preventDefault();
-    drop.hidden = true;
+    over(false);
     if (storing) return;
     const persisted = ask();
     const entries = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
     const all = [];
-    try { await Promise.all(entries.map((en) => entryFiles(en, '', all))); } catch (err) { return fail(`Cannot read what was dropped (${err?.message ?? err}).`); }
+    try { await Promise.all(entries.map((en) => entryFiles(en, '', all))); } catch (err) {
+      idle();
+      return message(`The dropped folder could not be read (${err?.message ?? err}).`);
+    }
     await store(all, persisted);
   });
   // the folder chosen with the browser's own dialog (its files, as they are below the folder), or null
@@ -554,24 +723,37 @@
     const persisted = ask();
     const all = await chooseFolder();
     if (all) await store(all, persisted);
-    return null;
   };
-  // the kept copy's line: its size, whether the browser may clear it, replace (a drop) or remove it
-  const showKept = async (size) => {
-    const el = document.getElementById('data');
-    const kept = await navigator.storage.persisted?.().catch(() => false);
-    const link = (text, act) => Object.assign(document.createElement('a'), { href: '#', textContent: text, onclick: (e) => { e.preventDefault(); act(); } });
-    el.replaceChildren(`Game data in this browser: ${gb(size)} GB, `,
-      kept ? 'kept' : link('may be cleared when space runs short: keep it', async () => { await ask(); showKept(size); }),
-      ' · drop a folder to replace it · ',
-      link('Remove', () => choose(`Remove the game data (${gb(size)} GB) from this browser? The page starts again without it.`, [
-        ['Remove', async () => {
-          const dir = await root();
-          for (const name of ['assets.idx', 'assets.pack']) await dir.removeEntry(name).catch(() => {});
-          location.reload();
-        }],
-        ['Keep', async () => null]])));
-    el.hidden = false;
+  $('pick').onclick = chosen;
+  $('setup-close').onclick = () => { message(null); setup.hidden = true; };
+  // the kept copy: a button over the game, and its dialog (size, whether the browser may clear it, replace, remove)
+  const showKept = (size) => {
+    const dialog = $('data-dialog');
+    const fill = async () => {
+      const kept = await navigator.storage.persisted?.().catch(() => false);
+      $('dd-size').textContent = `${gb(size)} GB`;
+      const line = $('dd-keep');
+      line.classList.toggle('kept', !!kept);
+      line.replaceChildren(document.createElement('i'),
+        kept ? 'Protected: the browser won’t clear it to free space.' : 'The browser may clear it when space runs low.');
+      if (!kept) {
+        const keep = Object.assign(document.createElement('button'), { type: 'button', className: 'btn', textContent: 'Protect it' });
+        keep.onclick = async () => { await ask(); fill(); };
+        line.append(keep);
+      }
+    };
+    const confirming = (on) => { $('dd-actions').hidden = on; $('dd-confirm').hidden = !on; };
+    $('dd-question').textContent = `Remove ${gb(size)} GB of game data from this browser? The game stops, and the page asks for the folder again.`;
+    $('dd-replace').onclick = () => { dialog.close(); chosen(); };
+    $('dd-remove').onclick = () => { confirming(true); $('dd-no').focus(); };
+    $('dd-no').onclick = () => confirming(false);
+    $('dd-yes').onclick = async () => {
+      const dir = await root();
+      for (const name of ['assets.idx', 'assets.pack']) await dir.removeEntry(name).catch(() => {});
+      location.reload();
+    };
+    $('data-btn').onclick = async () => { confirming(false); await fill(); dialog.showModal(); };
+    $('data-btn').hidden = false;
   };
 
   // the files, from the first of: the copy this browser keeps, a converted folder remembered (Chrome, Edge: written
@@ -590,14 +772,10 @@
     if (folder) local = await folderFiles(folder);
   } catch (e) { fail(`Cannot read the folder "${folder.name}" (${e.message}).`); }
   if (!local && !(serverAssets && (await fetch('assets/manifest.json', { method: 'HEAD' }).then((r) => r.ok, () => false)))) {
-    const loading = document.getElementById('loading');
-    loading.hidden = true;
-    const text = storable
-      ? 'No game data yet. Drop the folder <a href="https://github.com/openkimute/kumite_converter">kumite_converter</a> wrote '
-        + '(the one with manifest.json) anywhere on this page, or choose it: the game is copied into this browser and stays for the next visits.'
-      : 'No game data, and this browser cannot keep it (no storage for sites: a private window?).';
-    // (a copy kept reloads the page: until then, asked again)
-    for (;;) await choose(text, storable ? [['Choose folder…', chosen]] : []);
+    document.getElementById('loading').hidden = true;
+    idle();
+    // (a copy kept reloads the page)
+    await new Promise(() => {});
   }
   let preload = [];
   if (!location.hash.includes('nopreload')) {
@@ -626,6 +804,7 @@
   const wasm = __okfs.get(WASM);
   __okfs.forget(WASM);
   // (not fetched ahead: by its versioned name, not the glue's own guess without the version)
+  playing = true;
   init({ module_or_path: wasm ?? WASM }).then(() => {
     // the canvas winit adds takes the keyboard once clicked
     const focus = () => { const c = document.querySelector('canvas'); if (c) { c.tabIndex = 0; c.focus(); } };

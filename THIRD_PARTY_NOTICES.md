@@ -10,6 +10,12 @@ A patched copy of [matchbox_socket](https://github.com/johanhelsing/matchbox) by
 contributors, licensed MIT OR Apache-2.0; used here under the MIT licence ([its text](vendor/matchbox_socket/LICENSE-MIT)).
 The patch replaces its TLS backend with rustls.
 
+## Big Shoulders Display (`web/fonts/`)
+
+The browser version's display typeface, [Big Shoulders Display](https://github.com/xotypeco/big_shoulders) by
+Patric King (XO Type Co), licensed under the SIL Open Font License 1.1 ([its text](web/fonts/OFL.txt)). The file is
+the variable font's Latin subset, as packaged by [Fontsource](https://fontsource.org).
+
 ## No game data
 
 The repository contains no game data. Everything game-specific is

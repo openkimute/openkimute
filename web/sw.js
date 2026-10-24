@@ -6,7 +6,7 @@ const CACHE = 'openkumite';
 const scope = new URL(self.registration.scope);
 // what the start reads besides the game (each optional: a missing one is left out)
 const SHELL = ['./', 'store_worker.js', 'preload.json', 'manifest.webmanifest', 'pkg/config.json', 'pkg/version.txt',
-  'pkg/openkumite.svg', 'pkg/icon-192.png', 'pkg/icon-512.png', 'pkg/maskable-512.png', 'pkg/apple-touch-icon.png'];
+  'fonts/big-shoulders-display.woff2', 'pkg/openkumite.svg', 'pkg/icon-192.png', 'pkg/icon-512.png', 'pkg/maskable-512.png', 'pkg/apple-touch-icon.png'];
 
 const keep = async (cache, url, r) => {
   if (!r.ok || r.type !== 'basic') return;

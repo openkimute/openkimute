@@ -251,7 +251,7 @@ jobs:
           mkdir -p target/tools/bin && ln -s "$(command -v wasm-bindgen)" target/tools/bin/wasm-bindgen
           sh web/build.sh
           d=openkumite-$TAG-web
-          mkdir -p "$d/pkg" && cp web/index.html web/store_worker.js web/sw.js web/manifest.webmanifest web/preload.json README.md LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md "$d/"
+          mkdir -p "$d/pkg" "$d/fonts" && cp web/fonts/* "$d/fonts/" && cp web/index.html web/store_worker.js web/sw.js web/manifest.webmanifest web/preload.json README.md LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md "$d/"
           cp web/pkg/* "$d/pkg/"
           zip -qr "$d.zip" "$d"
       - uses: actions/upload-artifact@v7

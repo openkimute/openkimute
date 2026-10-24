@@ -94,9 +94,9 @@ The page takes the game data from the first of:
 
 1. the copy the browser keeps: drop the folder kumite_converter wrote (the one with `manifest.json`) anywhere on the
    page, or pick it with **Choose folder…**. The page copies it into the browser's storage (OPFS, as `assets.pack` and
-   `assets.idx`, the same pack kumite_converter's browser page writes), then starts. The line under the picture shows
-   its size and whether the browser keeps it safe from clean-ups. **Remove** deletes it, and dropping another
-   folder replaces it.
+   `assets.idx`, the same pack kumite_converter's browser page writes), then starts. The **Game data** button over
+   the game shows its size and whether the browser protects it from clean-ups, and replaces or removes it; dropping
+   another folder on the game replaces it too.
 2. a folder remembered in Chrome or Edge (kumite_converter's browser page writing to a folder on the disk)
 3. the server's `assets/`, unless the page was built with `--no-server-assets`
 

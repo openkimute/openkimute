@@ -222,6 +222,7 @@ fn guess_type(p: &Path) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "svg" => "image/svg+xml",
         "webmanifest" => "application/manifest+json",
+        "woff2" => "font/woff2",
         "glb" => "model/gltf-binary",
         "gltf" => "model/gltf+json",
         "mp3" => "audio/mpeg",
