@@ -1,0 +1,54 @@
+# The browser version on GitHub Pages (https://openkimute.github.io/openkimute/), from main. Built with
+# --no-server-assets: the site holds no game data; each player drops the folder kumite_converter wrote onto the page,
+# and their browser keeps it (OPFS, the same pack kumite_converter's own page on this site writes).
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# (one deployment at a time; a newer push waits for the running one)
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
+      - name: The browser build
+        run: |
+          mkdir -p target/tools/bin && ln -s "$(command -v wasm-bindgen)" target/tools/bin/wasm-bindgen
+          sh web/build.sh --no-server-assets
+          # (Pages compresses on its own: no .gz / .br copies)
+          mkdir -p site/pkg
+          cp web/index.html web/store_worker.js web/preload.json site/
+          find web/pkg -maxdepth 1 -type f ! -name '*.gz' ! -name '*.br' -exec cp {} site/pkg/ \;
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

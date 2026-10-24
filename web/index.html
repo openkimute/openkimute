@@ -15,14 +15,16 @@
   canvas { width: 960px; height: 720px; outline: none; }
   #error a { color: #fff; }
   #error { position: fixed; top: 16px; left: 16px; right: 16px; color: #f66; font: 14px monospace; white-space: pre-wrap; z-index: 3; }
-  #hint { position: fixed; bottom: 8px; width: 100%; text-align: center; color: #888; font: 13px sans-serif; }
+  /* below the picture: the game data this browser keeps, and the controls */
+  #foot { position: fixed; bottom: 8px; width: 100%; text-align: center; color: #888; font: 13px sans-serif; }
+  #data a { color: #bbb; }
   /* full screen (the browser's, or the game's): the picture alone */
-  @media (display-mode: fullscreen) { #hint { display: none; } }
-  :root:fullscreen #hint, body:has(:fullscreen) #hint { display: none; }
+  @media (display-mode: fullscreen) { #foot { display: none; } }
+  :root:fullscreen #foot, body:has(:fullscreen) #foot { display: none; }
 
   /* ---- touch screens: the on-screen pad (a DualShock to the game: the menus, KEY CONFIGURATION, all) ---- */
   body.touch { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
-  body.touch #hint { display: none; }
+  body.touch #foot { display: none; }
   /* the pad keeps clear of the notch and the rounded corners (safe area); its box follows the visible viewport */
   #pad { display: none; position: fixed; z-index: 2; pointer-events: none;
          top: env(safe-area-inset-top); right: env(safe-area-inset-right); bottom: env(safe-area-inset-bottom); left: env(safe-area-inset-left); }
@@ -49,17 +51,26 @@
   #tip { display: none; position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 3; max-width: 80%;
          padding: 8px 14px; border-radius: 10px; font: 13px sans-serif; color: #eee; background: rgba(0,0,0,.75);
          border: 1px solid rgba(255,255,255,.4); text-align: center; }
-  #loading { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 40%; color: #aaa;
+  #loading, #store { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 40%; color: #aaa;
              font: 13px sans-serif; text-align: center; }
-  #loading .bar { margin-top: 8px; height: 4px; background: #333; }
-  #loading .fill { height: 100%; width: 0; background: #ccc; }
+  #loading .bar, #store .bar { margin-top: 8px; height: 4px; background: #333; }
+  #loading .fill, #store .fill { height: 100%; width: 0; background: #ccc; }
+  #store { z-index: 6; }
+  /* a folder dragged over the page */
+  #drop { position: fixed; inset: 12px; z-index: 6; display: flex; align-items: center; justify-content: center;
+          border: 3px dashed #aaa; border-radius: 16px; background: rgba(0,0,0,.8); color: #eee; font: 20px sans-serif;
+          pointer-events: none; }
+  #drop[hidden] { display: none; }
   #log { display: none; position: fixed; left: 0; top: 0; width: 55%; max-height: 60%; overflow: auto; z-index: 5;
          font: 10px monospace; color: #cfc; background: rgba(0,0,0,.75); white-space: pre-wrap; pointer-events: none; }
 </style>
 </head>
 <body>
 <div id="error"></div>
-<div id="hint">Click the picture for keyboard and sound · arrows / WASD, U I J K (1 2 3 4), Enter = START, Esc = back · gamepads · OPTION &gt; KEY CONFIGURATION / KEYBOARD</div>
+<div id="foot">
+  <div id="data" hidden></div>
+  <div id="hint">Click the picture for keyboard and sound · arrows / WASD, U I J K (1 2 3 4), Enter = START, Esc = back · gamepads · OPTION &gt; KEY CONFIGURATION / KEYBOARD</div>
+</div>
 <div id="pad">
   <div class="zone left"><div class="ring" hidden></div><div class="knob" hidden></div></div>
   <div class="zone right"></div>
@@ -67,6 +78,7 @@
 <div id="rotate">Turn the device sideways to play</div>
 <div id="tip">For full screen: Share &rarr; Add to Home Screen, then play from the icon</div>
 <div id="log"></div>
+<div id="drop" hidden>Drop the converted game folder to keep it in this browser</div>
 <div id="loading">LOADING<div class="bar"><div class="fill"></div></div></div>
 <script type="module">
   // a failure shows on the page, not only in the console
@@ -422,15 +434,145 @@
     console.info(`the folder ${dir.name}: ${map.size} files in ${Math.round(performance.now() - t0)} ms`);
     return map.has('manifest.json') ? map : null;
   };
-  // Chrome, Edge: a folder picked here is remembered, as one kumite_converter's convert.html wrote into
-  const pick = window.showDirectoryPicker && (async () => {
-    const dir = await showDirectoryPicker({ id: 'openkumite' });
-    const files = await folderFiles(dir);
-    if (!files) fail(`No converted game in the folder "${dir.name}" (no manifest.json): pick the folder the converter wrote.`);
-    else await idb('put', dir, 'folder').catch(() => {});
-    return files;
+  // the build's settings (pkg/config.json, written by web/build.sh): serverAssets false (--no-server-assets, a public
+  // site such as GitHub Pages) is the player's own copy only, never the server's assets/
+  const config = await fetch('pkg/config.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : {})).catch(() => ({}));
+  const serverAssets = config.serverAssets !== false;
+  const gb = (n) => (n / 1e9).toFixed(2);
+  const root = () => navigator.storage.getDirectory();
+  // the conversion this browser keeps (OPFS): the files as slices of the pack, and its size; or null
+  const stored = async () => {
+    try {
+      const dir = await root();
+      const file = await (await dir.getFileHandle('assets.pack')).getFile();
+      const idx = JSON.parse(await (await (await dir.getFileHandle('assets.idx')).getFile()).text());
+      // (an entry past the pack's end is left out: its reads say not found)
+      const ok = ([at, n]) => Number.isSafeInteger(at) && Number.isSafeInteger(n) && at >= 0 && n >= 0 && at + n <= file.size;
+      const map = new Map(Object.entries(idx?.files ?? {}).filter(([, v]) => Array.isArray(v) && ok(v)));
+      if (idx?.version !== 1 || !map.has('manifest.json')) return null;
+      return { files: new Map([...map].map(([p, [at, n]]) => [p, typed(p, file, at, n)])), size: file.size };
+    } catch (e) { return null; /* none (or no OPFS: a private window) */ }
+  };
+
+  // ---- a converted folder dropped on the page, or chosen: copied into the pack (store_worker.js, the format
+  // kumite_converter's browser page writes: on one site, either's copy is the other's), then the page starts again on it
+  const storable = !!(navigator.storage?.getDirectory && window.Worker);
+  // a dropped item's files as [path, File] (a folder walked: readEntries gives its entries a batch at a time)
+  const entryFiles = async (entry, prefix, out) => {
+    if (entry.isFile) return void out.push([prefix + entry.name, await new Promise((ok, no) => entry.file(ok, no))]);
+    const r = entry.createReader();
+    for (let batch; (batch = await new Promise((ok, no) => r.readEntries(ok, no))).length;) {
+      await Promise.all(batch.map((e) => entryFiles(e, `${prefix}${entry.name}/`, out)));
+    }
+  };
+  // the conversion among them: the files below the shallowest manifest.json's folder (without hidden files and the
+  // server's compressed copies), or null
+  const converted = (all) => {
+    const depth = (p) => p.split('/').length;
+    const m = all.map(([p]) => p).filter((p) => /(^|\/)manifest\.json$/.test(p)).sort((a, b) => depth(a) - depth(b))[0];
+    if (m === undefined) return null;
+    const base = m.slice(0, -'manifest.json'.length);
+    return all.filter(([p]) => p.startsWith(base)).map(([p, f]) => [p.slice(base.length), f])
+      .filter(([p]) => !/(^|\/)\./.test(p) && !/\.(gz|br)$/.test(p));
+  };
+  let storing = false;
+  // `persisted`: the browser asked to keep the site's storage, from the drop or the click (Firefox asks the user)
+  const store = async (all, persisted) => {
+    if (storing) return;
+    if (!storable) return fail('This browser cannot keep the game (no storage for sites: a private window?).');
+    const files = converted(all);
+    if (!files) return fail('No converted game in that (no manifest.json): drop the folder kumite_converter wrote.');
+    storing = true;
+    const box = document.createElement('div');
+    box.id = 'store';
+    box.innerHTML = '<span></span><div class="bar"><div class="fill"></div></div>';
+    const say = (m) => { box.firstChild.textContent = m; };
+    // (the page's questions away meanwhile)
+    const error = document.getElementById('error');
+    error.hidden = true;
+    const done = (m) => { storing = false; box.remove(); error.hidden = false; if (m) fail(m); };
+    document.body.append(box);
+    say('CHECKING THE SPACE');
+    const need = files.reduce((a, [, f]) => a + f.size, 0);
+    const old = (await stored())?.size ?? 0;
+    const room = async () => { const { quota = 0, usage = 0 } = await navigator.storage.estimate(); return quota - usage + old; };
+    // (a site's storage grows when the browser keeps it: asked again after its answer)
+    if ((await room()) < need) await persisted;
+    if ((await room()) < need) return done(`Not enough space for the game in this browser: it needs ${gb(need)} GB, there is ${gb(await room())} GB.`);
+    const fill = box.querySelector('.fill');
+    const worker = new Worker('store_worker.js');
+    const result = await new Promise((ok) => {
+      worker.onmessage = ({ data }) => {
+        if (data.progress === undefined) return ok(data);
+        say(`KEEPING THE GAME IN THIS BROWSER: ${gb(data.progress)} OF ${gb(need)} GB`);
+        fill.style.width = `${100 * data.progress / need}%`;
+      };
+      worker.onerror = (e) => ok({ error: e.message });
+      say(`KEEPING THE GAME IN THIS BROWSER: 0.00 OF ${gb(need)} GB`);
+      worker.postMessage({ files });
+    });
+    worker.terminate();
+    if (result.error) return done(result.quota ? `Not enough space for the game in this browser (${gb(need)} GB).` : `The game could not be kept in this browser (${result.error}).`);
+    console.info(`kept ${files.length} files, ${gb(result.done)} GB`);
+    // (the kept copy replaces a folder remembered before)
+    await idb('delete', 'folder').catch(() => {});
+    location.reload();
+  };
+  const ask = () => navigator.storage?.persist?.().catch(() => false);
+  const drop = document.getElementById('drop');
+  addEventListener('dragover', (e) => {
+    if (storing || !e.dataTransfer?.types.includes('Files')) return;
+    e.preventDefault();
+    drop.hidden = false;
   });
-  let folder = pick ? await idb('get', 'folder').catch(() => null) : null;
+  addEventListener('dragleave', (e) => { if (!e.relatedTarget) drop.hidden = true; });
+  addEventListener('drop', async (e) => {
+    if (!e.dataTransfer?.types.includes('Files')) return;
+    e.preventDefault();
+    drop.hidden = true;
+    if (storing) return;
+    const persisted = ask();
+    const entries = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry?.()).filter(Boolean);
+    const all = [];
+    try { await Promise.all(entries.map((en) => entryFiles(en, '', all))); } catch (err) { return fail(`Cannot read what was dropped (${err?.message ?? err}).`); }
+    await store(all, persisted);
+  });
+  // the folder chosen with the browser's own dialog (its files, as they are below the folder), or null
+  const chooseFolder = () => new Promise((ok) => {
+    const input = Object.assign(document.createElement('input'), { type: 'file', webkitdirectory: true });
+    input.onchange = () => ok([...input.files].map((f) => [f.webkitRelativePath || f.name, f]));
+    input.oncancel = () => ok(null);
+    input.click();
+  });
+  const chosen = async () => {
+    const persisted = ask();
+    const all = await chooseFolder();
+    if (all) await store(all, persisted);
+    return null;
+  };
+  // the kept copy's line: its size, whether the browser may clear it, replace (a drop) or remove it
+  const showKept = async (size) => {
+    const el = document.getElementById('data');
+    const kept = await navigator.storage.persisted?.().catch(() => false);
+    const link = (text, act) => Object.assign(document.createElement('a'), { href: '#', textContent: text, onclick: (e) => { e.preventDefault(); act(); } });
+    el.replaceChildren(`Game data in this browser: ${gb(size)} GB, `,
+      kept ? 'kept' : link('may be cleared when space runs short: keep it', async () => { await ask(); showKept(size); }),
+      ' · drop a folder to replace it · ',
+      link('Remove', () => choose(`Remove the game data (${gb(size)} GB) from this browser? The page starts again without it.`, [
+        ['Remove', async () => {
+          const dir = await root();
+          for (const name of ['assets.idx', 'assets.pack']) await dir.removeEntry(name).catch(() => {});
+          location.reload();
+        }],
+        ['Keep', async () => null]])));
+    el.hidden = false;
+  };
+
+  // the files, from the first of: the copy this browser keeps, a converted folder remembered (Chrome, Edge: written
+  // by kumite_converter's convert.html), the server's assets/ (without --no-server-assets)
+  const kept = await stored();
+  if (kept) { local = kept.files; showKept(kept.size); }
+  let folder = !local && window.showDirectoryPicker ? await idb('get', 'folder').catch(() => null) : null;
   if (folder && (await folder.queryPermission({ mode: 'read' }).catch(() => 'denied')) !== 'granted') {
     // (on a later visit the browser asks again)
     const name = folder.name.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
@@ -441,24 +583,15 @@
   try {
     if (folder) local = await folderFiles(folder);
   } catch (e) { fail(`Cannot read the folder "${folder.name}" (${e.message}).`); }
-  if (!local) {
-    try {
-      const dir = await navigator.storage.getDirectory();
-      const file = await (await dir.getFileHandle('assets.pack')).getFile();
-      const idx = JSON.parse(await (await (await dir.getFileHandle('assets.idx')).getFile()).text());
-      // (an entry past the pack's end is left out: its reads say not found)
-      const ok = ([at, n]) => Number.isSafeInteger(at) && Number.isSafeInteger(n) && at >= 0 && n >= 0 && at + n <= file.size;
-      const map = new Map(Object.entries(idx?.files ?? {}).filter(([, v]) => Array.isArray(v) && ok(v)));
-      if (idx?.version === 1 && map.has('manifest.json')) local = new Map([...map].map(([p, [at, n]]) => [p, typed(p, file, at, n)]));
-    } catch (e) { /* none (or no OPFS: a private window) */ }
-  }
-  if (!local && !(await fetch('assets/manifest.json', { method: 'HEAD' }).then((r) => r.ok, () => false))) {
+  if (!local && !(serverAssets && (await fetch('assets/manifest.json', { method: 'HEAD' }).then((r) => r.ok, () => false)))) {
     const loading = document.getElementById('loading');
     loading.hidden = true;
-    const text = 'No converted game here. Convert your game disc with kumite_converter (its browser page or CLI) first';
-    while (!local) local = await choose(pick ? `${text}, or open a folder converted before:` : `${text}.`, pick ? [['Open converted game folder…', pick]] : []);
-    document.getElementById('error').textContent = '';
-    loading.hidden = false;
+    const text = storable
+      ? 'No game data yet. Drop the folder <a href="https://github.com/openkimute/kumite_converter">kumite_converter</a> wrote '
+        + '(the one with manifest.json) anywhere on this page, or choose it: the game is copied into this browser and stays for the next visits.'
+      : 'No game data, and this browser cannot keep it (no storage for sites: a private window?).';
+    // (a copy kept reloads the page: until then, asked again)
+    for (;;) await choose(text, storable ? [['Choose folder…', chosen]] : []);
   }
   let preload = [];
   if (!location.hash.includes('nopreload')) {

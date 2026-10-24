@@ -90,6 +90,22 @@ and brotli too under PowerShell 7); serve with `cargo run --release -p serve -- 
 `web/serve.sh` links `web/assets` to `OPENKUMITE_ASSETS` (or `../assets`). `sh web/make_preload.sh` regenerates
 `web/preload.json`, the files fetched before the first screens show.
 
+The page takes the game data from the first of:
+
+1. the copy the browser keeps: drop the folder kumite_converter wrote (the one with `manifest.json`) anywhere on the
+   page, or pick it with **Choose folder…**. The page copies it into the browser's storage (OPFS, as `assets.pack` and
+   `assets.idx`, the same pack kumite_converter's browser page writes), then starts. The line under the picture shows
+   its size and whether the browser keeps it safe from clean-ups. **Remove** deletes it, and dropping another
+   folder replaces it.
+2. a folder remembered in Chrome or Edge (kumite_converter's browser page writing to a folder on the disk)
+3. the server's `assets/`, unless the page was built with `--no-server-assets`
+
+`sh web/build.sh --no-server-assets` (`web\build.bat --no-server-assets`) builds a page that never reads the
+server's `assets/`: every player brings their own copy. Every push to `main` deploys that build to GitHub Pages:
+https://openkimute.github.io/openkimute/. kumite_converter's browser page at
+https://openkimute.github.io/kumite_converter/ is on the same site, so a game it converts there is found by the
+game's page directly.
+
 ## Online play
 
 Players meet in a room on a [matchbox](https://github.com/johanhelsing/matchbox) signalling server and connect
