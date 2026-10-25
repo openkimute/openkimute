@@ -16,7 +16,7 @@ use crate::data::{Cancel, CancelKind, Move};
 use crate::input::Pad;
 use crate::{Angles, Current, Fighter, GameData, ONE};
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::path::Path;
 
@@ -716,6 +716,8 @@ pub struct Ai {
     /// Global difficulty (0x800AE208) and level (0x800AE211) the profile is taken from.
     pub difficulty: usize,
     pub level: usize,
+    /// How it plays on top of the game's routine (OpenKumite's own; [`Style::Classic`]: as the game).
+    style: Style,
     /// Statistics: chain-throw continuations and reaction picks (4.M / 4.O).
     pub followups: u32,
     /// The round setup (0x80059654) has to run before the next frame.
@@ -849,12 +851,69 @@ pub struct Ai {
     thr_op: [i32; 6],
 }
 
+/// How an AI seat plays, on top of the game's routine (OpenKumite's own: a demo's or a test's players). Each
+/// leans the routine's choices its way; [`Style::Classic`] is the game's CPU as it is. Deterministic: whatever it
+/// draws comes from the AI's own random streams, so a replay plays it again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Style {
+    /// The game's CPU, unchanged.
+    #[default]
+    Classic,
+    /// Closes in and attacks all the time: short cooldowns, strings, little guarding.
+    Rushdown,
+    /// Guards, waits for whiffs and punishes them.
+    Defensive,
+    /// Baits and counter-hits: steps in and out of reach, attacks into the other's start-up.
+    Counter,
+    /// Throws whenever in reach, escapes throws.
+    Thrower,
+    /// Sidesteps and moves around, attacks from the side and the back.
+    Evasive,
+    /// Launches and juggles, presses a fallen opponent.
+    Juggler,
+    /// Changes style every so often within a match.
+    Mixed,
+}
+
+impl Style {
+    pub const ALL: [Style; 8] = [Style::Classic, Style::Rushdown, Style::Defensive, Style::Counter, Style::Thrower, Style::Evasive, Style::Juggler, Style::Mixed];
+
+    /// Its name on the command line and in a replay's title.
+    pub fn name(self) -> &'static str {
+        match self {
+            Style::Classic => "classic",
+            Style::Rushdown => "rushdown",
+            Style::Defensive => "defensive",
+            Style::Counter => "counter",
+            Style::Thrower => "thrower",
+            Style::Evasive => "evasive",
+            Style::Juggler => "juggler",
+            Style::Mixed => "mixed",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|x| x.name().eq_ignore_ascii_case(s.trim()))
+    }
+}
+
 impl Ai {
+    /// This AI playing `style` (shortcut: no behavior yet; the styles are filled in by the AI work).
+    pub fn with_style(mut self, style: Style) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn style(&self) -> Style {
+        self.style
+    }
+
     /// A CPU player in actor slot `slot` (the state block is zero at boot); `difficulty` 0..2, `level` 0..9.
     pub fn new(difficulty: usize, level: usize, slot: usize) -> Self {
         Self {
             difficulty,
             level,
+            style: Style::Classic,
             followups: 0,
             pending: true,
             slot: slot as i32,
