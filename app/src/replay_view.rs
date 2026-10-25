@@ -214,6 +214,10 @@ pub struct Browser {
 /// What the browser asks the app to do.
 pub enum BrowserAction {
     Play(Box<Entry>),
+    /// Save it as a file to share.
+    Export(Box<Entry>),
+    /// Open replay files someone shared.
+    Import,
     Close,
 }
 
@@ -229,8 +233,8 @@ impl Browser {
         e.file.version == replay::VERSION && (self.data.is_empty() || e.file.data == self.data)
     }
 
-    /// A key from the keyboard or a pad: up / down, START plays, button 1 keeps, button 2 deletes (twice), BACK
-    /// closes.
+    /// A key from the keyboard or a pad: up / down, START plays, button 1 keeps, button 2 deletes (twice), button 3
+    /// exports, button 4 imports, BACK closes.
     pub fn key(&mut self, key: crate::menu::Key) -> Option<BrowserAction> {
         use crate::menu::Key;
         let n = self.entries.len();
@@ -240,6 +244,8 @@ impl Browser {
             Key::Start => return self.play(self.cursor),
             Key::Button(0) => self.toggle_keep(self.cursor),
             Key::Button(1) => self.delete(self.cursor),
+            Key::Button(2) => return self.entries.get(self.cursor).map(|e| BrowserAction::Export(Box::new(e.clone()))),
+            Key::Button(3) => return Some(BrowserAction::Import),
             Key::Back => return Some(BrowserAction::Close),
             _ => {}
         }
@@ -279,6 +285,13 @@ impl Browser {
         }
     }
 
+    /// The list again (replays imported), `select` under the cursor.
+    pub fn reload(&mut self, select: Option<&str>, message: String) {
+        self.entries = replay::list();
+        self.cursor = select.and_then(|id| self.entries.iter().position(|e| e.id == id)).unwrap_or(self.cursor.min(self.entries.len().saturating_sub(1)));
+        self.message = Some(message);
+    }
+
     pub fn ui(&mut self, ctx: &egui::Context) -> Option<BrowserAction> {
         let mut action = None;
         let now = replay::now();
@@ -292,7 +305,7 @@ impl Browser {
                 });
                 ui.add_space(8.0);
                 if self.entries.is_empty() {
-                    ui.label(RichText::new("No replays yet. Play a match: it is recorded on its own.").color(Color32::LIGHT_GRAY));
+                    ui.label(RichText::new("No replays yet. Play a match: it is recorded on its own. Or import one someone shared.").color(Color32::LIGHT_GRAY));
                 }
                 egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 220.0).max(160.0)).show(ui, |ui| {
                     for i in 0..self.entries.len() {
@@ -342,6 +355,12 @@ impl Browser {
                     let kept = self.entries.get(self.cursor).is_some_and(|e| e.file.kept);
                     if ui.add_enabled(has, egui::Button::new(if kept { "★ Kept" } else { "☆ Keep" }).selected(kept)).on_hover_text("Never deleted to make room (button 1)").clicked() {
                         self.toggle_keep(self.cursor);
+                    }
+                    if ui.add_enabled(has, egui::Button::new("Export…")).on_hover_text("Save it as a file to share (button 3)").clicked() {
+                        action = self.entries.get(self.cursor).map(|e| BrowserAction::Export(Box::new(e.clone())));
+                    }
+                    if ui.button("Import…").on_hover_text("Open replay files someone shared, or drop them on the window (button 4)").clicked() {
+                        action = Some(BrowserAction::Import);
                     }
                     if ui.add_enabled(has, egui::Button::new("Delete")).on_hover_text("Button 2, twice").clicked() {
                         self.delete(self.cursor);

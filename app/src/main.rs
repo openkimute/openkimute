@@ -51,6 +51,7 @@ mod debug;
 mod demo;
 #[cfg(not(target_arch = "wasm32"))]
 mod direct;
+mod files;
 mod forcerun;
 #[cfg(not(target_arch = "wasm32"))]
 mod gamepad;
@@ -442,6 +443,8 @@ struct App {
     replay_counters_before: Option<[usize; 3]>,
     /// The replays, open over the main menu.
     replays: Option<replay_view::Browser>,
+    /// Keys are the game's again from then (a system dialog closed with one).
+    keys_after: Option<Instant>,
     demo_out: Option<std::path::PathBuf>,
     demo_play: Option<demo::Playback>,
     /// Rewind buffer: the fight after each step (`--debug`), newest last; and the quick-saved fight.
@@ -1490,6 +1493,63 @@ impl App {
         self.replay_next = Some(Box::new((entry, inputs)));
         (self.debug.paused, self.debug.speed, self.debug.free_cam) = (false, 1.0, None);
         self.load_fight(setup, ladder);
+    }
+
+    /// What the replays' list asked for.
+    fn browser_action(&mut self, action: Option<replay_view::BrowserAction>) {
+        use replay_view::BrowserAction as A;
+        // (a system dialog opens: the key that closes it, and its release, stay out of the game)
+        if matches!(action, Some(A::Export(_) | A::Import)) {
+            self.keys_after = Some(Instant::now() + Duration::from_millis(400));
+        }
+        match action {
+            Some(A::Play(e)) => self.play_replay(*e),
+            Some(A::Close) => self.replays = None,
+            Some(A::Export(e)) => {
+                let said = match replay::to_bytes(&e.file).and_then(|b| files::save(&replay::file_name(&e.file), &files::REPLAY, &b)) {
+                    Ok(Some(to)) => format!("Exported: {to}"),
+                    Ok(None) => {
+                        self.keys_after = Some(Instant::now() + Duration::from_millis(400));
+                        return;
+                    }
+                    Err(err) => format!("Not exported: {err:#}"),
+                };
+                self.keys_after = Some(Instant::now() + Duration::from_millis(400));
+                if let Some(b) = self.replays.as_mut() {
+                    b.message = Some(said);
+                }
+            }
+            Some(A::Import) => {
+                let opened = files::open(&files::REPLAY);
+                self.keys_after = Some(Instant::now() + Duration::from_millis(400));
+                if !opened.is_empty() {
+                    self.import_replays(opened);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Replay files someone shared (opened, or dropped on the window): imported, the list open with the last.
+    fn import_replays(&mut self, opened: Vec<(String, Vec<u8>)>) {
+        let (mut last, mut said) = (None, Vec::new());
+        for (name, bytes) in opened {
+            match replay::import(&bytes) {
+                Ok(id) => {
+                    said.push(format!("Imported {name}"));
+                    last = Some(id);
+                }
+                Err(e) => said.push(format!("{name}: {e:#}")),
+            }
+        }
+        if self.replays.is_none() && self.replay_view.is_none() && (self.screen.is_some() || self.fight.is_none()) {
+            self.replays = Some(replay_view::Browser::new(self.assets.fingerprint(), None));
+        }
+        if let Some(b) = self.replays.as_mut() {
+            b.reload(last.as_deref(), said.join(" · "));
+        } else {
+            self.debug.say(said.join(" · "));
+        }
     }
 
     /// Leave the replay: back to the replays over the main menu.
@@ -3396,11 +3456,8 @@ impl App {
     fn menu_key(&mut self, player: usize, key: Key) -> bool {
         // the replays' list over the main menu, and a replay playing, take the keys
         if let Some(b) = self.replays.as_mut() {
-            match b.key(key) {
-                Some(replay_view::BrowserAction::Play(e)) => self.play_replay(*e),
-                Some(replay_view::BrowserAction::Close) => self.replays = None,
-                None => {}
-            }
+            let action = b.key(key);
+            self.browser_action(action);
             return true;
         }
         if self.replay_view.is_some() && self.screen.is_none() {
@@ -4027,10 +4084,11 @@ impl App {
             }
         }
         self.apply_actions();
-        match browser_action {
-            Some(replay_view::BrowserAction::Play(e)) => self.play_replay(*e),
-            Some(replay_view::BrowserAction::Close) => self.replays = None,
-            None => {}
+        self.browser_action(browser_action);
+        // (a browser's picker: the replay files it has read)
+        let opened = files::take_opened();
+        if !opened.is_empty() {
+            self.import_replays(opened);
         }
         self.replay_requests();
     }
@@ -4966,6 +5024,10 @@ impl App {
                 }
             }
             WindowEvent::KeyboardInput { event: KeyEvent { physical_key: PhysicalKey::Code(code), state, repeat, ref text, .. }, .. } => {
+                // (a system dialog just closed: the key that closed it is not the game's)
+                if self.keys_after.is_some_and(|t| Instant::now() < t) {
+                    return;
+                }
                 // ONLINE's code / address being typed: the letters and digits go there, not to the controls
                 if let Some(Screen::Online(o)) = self.screen.as_mut() {
                     if o.typing() && state == ElementState::Pressed {
@@ -5040,6 +5102,13 @@ impl App {
                     ElementState::Released => {
                         self.keys.remove(&code);
                     }
+                }
+            }
+            // replay files dropped on the window: imported
+            WindowEvent::DroppedFile(path) if path.extension().is_some_and(|e| e == files::REPLAY.ext) => {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    let name = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                    self.import_replays(vec![(name, bytes)]);
                 }
             }
             WindowEvent::Focused(false) => {
@@ -6013,6 +6082,7 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
         replay_view: None,
         replay_counters_before: None,
         replays: None,
+        keys_after: None,
         demo_out: None,
         demo_play: None,
         history: Default::default(),

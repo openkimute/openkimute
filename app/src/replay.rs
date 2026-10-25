@@ -148,6 +148,48 @@ pub fn remove(id: &str) {
     store::remove(id);
 }
 
+/// A replay as a file to share (what Export writes, Import reads).
+pub fn to_bytes(file: &ReplayFile) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(file)?)
+}
+
+/// A file name for it: "openkumite-VS-Paul-vs-Law-2026-10-25-1520.okreplay" (the time in UTC).
+pub fn file_name(file: &ReplayFile) -> String {
+    let name: String = file.title.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    let name = name.split('-').filter(|s| !s.is_empty()).collect::<Vec<_>>().join("-");
+    let (y, mo, d) = civil(file.recorded / 86400);
+    let (h, mi) = (file.recorded % 86400 / 3600, file.recorded % 3600 / 60);
+    format!("openkumite-{name}-{y:04}-{mo:02}-{d:02}-{h:02}{mi:02}.okreplay")
+}
+
+/// The date of a day count since 1970-01-01 (proleptic Gregorian).
+fn civil(days: u64) -> (i64, u32, u32) {
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// Import a replay file someone shared: checked, then saved and kept (it is not one of this computer's newest).
+/// Its id; the one already here, when it is.
+pub fn import(bytes: &[u8]) -> anyhow::Result<String> {
+    use anyhow::Context;
+    let mut file: ReplayFile = serde_json::from_slice(bytes).context("this is not an OpenKumite replay file")?;
+    anyhow::ensure!(file.version == VERSION, "this replay is of another OpenKumite version (its format {}, this one plays {VERSION})", file.version);
+    let steps = file.inputs.iter().map(|r| u64::from(r.0)).sum::<u64>();
+    anyhow::ensure!(steps == file.steps && steps > 0, "this replay file is damaged");
+    if let Some(e) = list().into_iter().find(|e| e.file.recorded == file.recorded && e.file.hash == file.hash && e.file.inputs == file.inputs) {
+        return Ok(e.id);
+    }
+    file.kept = true;
+    store::save(&file)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod store {
     use super::{Entry, ReplayFile, EXT};
@@ -252,6 +294,9 @@ mod tests {
         assert_eq!(decode(&runs), steps);
     }
 
+    /// The tests that use the replays' folder, one at a time.
+    static FOLDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn file(recorded: u64) -> ReplayFile {
         let setup = FightSetup { mode: crate::menu::Mode::Versus, players: [(0, 0), (1, 0)], stage: 0, difficulty: 1, level: 0, handicap: [100; 2], ball: None, partners: None };
         let params = MatchParams { rounds: 2, round_frames: 3600, max_health: [None; 2], start_health: [None; 2], cpu: [false; 2], interlude_check: false, counters: [0; 3] };
@@ -274,8 +319,34 @@ mod tests {
     }
 
     #[test]
+    fn a_file_name_says_what_and_when() {
+        let mut f = file(1_792_941_618);
+        f.title = "ONLINE VS · Paul vs Law".into();
+        assert_eq!(file_name(&f), "openkumite-ONLINE-VS-Paul-vs-Law-2026-10-25-1520.okreplay");
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn an_exported_replay_imports_once_and_kept() {
+        let _one = FOLDER.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = std::fs::remove_dir_all(crate::save::save_dir().join("replays"));
+        let bytes = to_bytes(&file(5)).unwrap();
+        let id = import(&bytes).unwrap();
+        assert_eq!(import(&bytes).unwrap(), id, "the same one twice: not again");
+        let all = list();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].file.kept);
+        assert!(import(b"{}").is_err());
+        let mut damaged = file(6);
+        damaged.steps = 99;
+        assert!(import(&to_bytes(&damaged).unwrap()).unwrap_err().to_string().contains("damaged"));
+        let _ = std::fs::remove_dir_all(crate::save::save_dir().join("replays"));
+    }
+
+    #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn the_newest_are_kept_and_the_kept_ones() {
+        let _one = FOLDER.lock().unwrap_or_else(|e| e.into_inner());
         let _ = std::fs::remove_dir_all(crate::save::save_dir().join("replays"));
         let first = save(&file(1)).unwrap();
         set_kept(&first, true).unwrap();
