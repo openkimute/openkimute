@@ -171,6 +171,7 @@ its own, its progress and Cancel at the top left). The encoding takes its time: 
 length at 720p and 3x at 1080p, longer at 4K. AV1 plays in current browsers, VLC and recent phones and TVs; some
 older devices do not play it. From the command line: `openkumite --export-video ID|latest --out FILE.mp4 [--size
 1920x1080] [--no-hud] [--free-cam YAW,PITCH,DIST,X,Y,Z]`.
+`sh packaging/demo_videos.sh` records AI-vs-AI matches headless and makes each an MP4 (`--help` for its options).
 
 A replay plays only on the game data it was recorded on. Before it plays it is run through once (copies kept for
 seeking), and its end is checked against the state recorded: the viewer says **verified**, or that it differs; played
