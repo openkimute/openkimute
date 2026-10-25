@@ -218,10 +218,7 @@ The git hooks (`.cargo-husky/hooks`) run `commit` and `push`. Tests read the con
 `OPENKUMITE_ASSETS` (default `assets/`); the ones that need them skip when they are missing or an older conversion
 (CI has none). The integration tests in `app/tests/` run the game's binary headless (`--shot`) and need a GPU too:
 `replay_seek.rs` records a real match, seeks in its replay and compares the state, the HUD and the picture with
-playing straight.
-
-A bug fix is retested in the running game the way the bug showed before it counts as fixed, and comes with a test
-that fails without it: a unit test, and an integration test in `app/tests/` when the bug shows in the game. The wasm lint needs `rustup target add wasm32-unknown-unknown`;
+playing straight. The wasm lint needs `rustup target add wasm32-unknown-unknown`;
 fuzzing needs nightly and `cargo-fuzz`.
 
 Code rules (workspace lints): no `unsafe` (except the macOS haptics FFI), and no `unwrap` / `expect` / `panic!` on
