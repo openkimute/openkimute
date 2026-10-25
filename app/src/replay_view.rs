@@ -252,7 +252,7 @@ impl Browser {
     }
 
     fn playable(&self, e: &Entry) -> bool {
-        e.file.version == replay::VERSION && (self.data.is_empty() || e.file.data == self.data)
+        e.file.plays_on(&self.data)
     }
 
     /// A key from the keyboard or a pad: up / down, START plays, button 1 keeps, button 2 deletes (twice), button 3

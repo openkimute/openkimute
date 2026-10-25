@@ -449,6 +449,8 @@ struct App {
     /// A Force replay's players joining (the step before which, who), and the next one to come.
     replay_joins: Vec<(u64, u8)>,
     replay_join_next: usize,
+    /// Joins replayed out of sight (the run-through, a seek): without their sound.
+    replay_quiet: bool,
     /// The tag stage before a tag brawl's replay set its own (put back after it).
     replay_tag_stage: Option<Option<usize>>,
     /// The replays, open over the main menu.
@@ -717,7 +719,6 @@ impl App {
             (f.partner, f.extra_voice) = (Some(voice(partners.partners[0])), Some(voice(partners.partners[1])));
             f.seats = Some(partners.seats);
         }
-        let _ = counters;
         self.begin_replay();
         self.screen = None;
         Ok(())
@@ -799,7 +800,7 @@ impl App {
         }
         // (the joins still to come: from this step on)
         let at = self.replay_played() as u64;
-        self.replay_join_next = self.replay_joins.iter().take_while(|j| j.0 < at).count();
+        self.replay_join_next = replay::joins_to_come(&self.replay_joins, at);
     }
 
     /// The steps the replay has played.
@@ -842,7 +843,7 @@ impl App {
     fn replay_joins_due(&mut self) {
         let at = self.replay_played() as u64;
         while let Some(&(step, who)) = self.replay_joins.get(self.replay_join_next) {
-            if step > at {
+            if !replay::join_due((step, who), at) {
                 break;
             }
             self.replay_join_next += 1;
@@ -860,7 +861,9 @@ impl App {
             t.game.step([Pad::default(); 4]);
             return;
         }
+        self.replay_quiet = true;
         self.replay_joins_due();
+        self.replay_quiet = false;
         let Some(f) = self.fight.as_mut() else { return };
         f.bout.step([Pad::default(); 2]);
         if self.force_fight() {
@@ -1700,6 +1703,23 @@ impl App {
     /// Watch a replay: its match loaded from what made it (a fight, a tag brawl, a Force stage), its inputs playing
     /// it.
     fn play_replay(&mut self, entry: replay::Entry) {
+        // (checked here, whatever asked: the list, `--replay`, a video)
+        let why = if !entry.file.plays_on(&self.assets.fingerprint()) {
+            Some("it was recorded on other game data or another version")
+        } else if !entry.file.sane(&self.roster) {
+            Some("the file is damaged")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            let said = format!("This replay cannot play here: {why}.");
+            log::warn!("replay {}: {said}", entry.id);
+            match self.replays.as_mut() {
+                Some(b) => b.message = Some(said),
+                None => self.debug.say(said),
+            }
+            return;
+        }
         let inputs: Arc<[kumite_game::bout::StepInput]> = replay::decode(&entry.file.inputs).into();
         let game = entry.file.game.clone();
         self.replays = None;
@@ -1730,23 +1750,18 @@ impl App {
     /// What the replays' list asked for.
     fn browser_action(&mut self, action: Option<replay_view::BrowserAction>) {
         use replay_view::BrowserAction as A;
-        // (a system dialog opens: the key that closes it, and its release, stay out of the game)
-        if matches!(action, Some(A::Export(_) | A::Import)) {
-            self.keys_after = Some(Instant::now() + Duration::from_millis(400));
-        }
+        // (after a system dialog: the key that closed it, and its release, stay out of the game)
         match action {
             Some(A::Play(e)) => self.play_replay(*e),
             Some(A::Close) => self.replays = None,
             Some(A::Export(e)) => {
-                let said = match replay::to_bytes(&e.file).and_then(|b| files::save(&replay::file_name(&e.file), &files::REPLAY, &b)) {
+                let saved = replay::to_bytes(&e.file).and_then(|b| files::save(&replay::file_name(&e.file), &files::REPLAY, &b));
+                self.keys_after = Some(Instant::now() + Duration::from_millis(400));
+                let said = match saved {
                     Ok(Some(to)) => format!("Exported: {to}"),
-                    Ok(None) => {
-                        self.keys_after = Some(Instant::now() + Duration::from_millis(400));
-                        return;
-                    }
+                    Ok(None) => return,
                     Err(err) => format!("Not exported: {err:#}"),
                 };
-                self.keys_after = Some(Instant::now() + Duration::from_millis(400));
                 if let Some(b) = self.replays.as_mut() {
                     b.message = Some(said);
                 }
@@ -3346,7 +3361,9 @@ impl App {
             Ok(actor) => {
                 fight.bout.game.join_player(p, &actor);
                 run.more_players[p - 2] = Some((ch, cos, self.roster.costume_of.get(&model).copied().unwrap_or(0)));
-                menu::sfx::play(menu::sfx::start());
+                if !self.replay_quiet {
+                    menu::sfx::play(menu::sfx::start());
+                }
                 log::info!("Force: {}P joins as {} ({model})", p + 1, c.name);
             }
             Err(e) => log::warn!("Force {}P {model}: {e:#}", p + 1),
@@ -3385,7 +3402,9 @@ impl App {
                 run.partner = Some((ch, cos));
                 run.partner_costume = self.roster.costume_of.get(&model).copied().unwrap_or(0);
                 fight.partner = Some((format!("m{model:03}"), self.roster.voice_of.get(&model).copied().unwrap_or(c.id)));
-                menu::sfx::play(menu::sfx::start());
+                if !self.replay_quiet {
+                    menu::sfx::play(menu::sfx::start());
+                }
                 log::info!("Force: 2P joins as {} ({model})", c.name);
             }
             Err(e) => log::warn!("the co-op partner {model}: {e:#}"),
@@ -6517,6 +6536,7 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
         replay_counters_before: None,
         replay_joins: Vec::new(),
         replay_join_next: 0,
+        replay_quiet: false,
         replay_tag_stage: None,
         replays: None,
         keys_after: None,

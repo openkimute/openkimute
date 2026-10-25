@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 pub const VERSION: u32 = 2;
 /// The newest replays kept (natively; a browser's storage keeps fewer).
 pub const KEEP: usize = if cfg!(target_arch = "wasm32") { 15 } else { 50 };
+/// The longest match a replay holds (an hour): a longer one is a damaged file.
+pub const MAX_STEPS: u64 = 60 * 60 * 60;
 /// Native files' extension.
 #[cfg(not(target_arch = "wasm32"))]
 pub const EXT: &str = "okreplay";
@@ -68,6 +70,50 @@ pub struct ReplayFile {
     pub hash: u64,
     /// The inputs, run-length coded: (steps, the input's bits low, high).
     pub inputs: Vec<(u32, u64, u64)>,
+}
+
+impl ReplayFile {
+    /// Whether it plays on this game data (its fingerprint; none known: any): of this format, recorded on it.
+    pub fn plays_on(&self, data: &str) -> bool {
+        self.version == VERSION && (data.is_empty() || self.data == data)
+    }
+
+    /// Whether its inputs are as many steps as it says, at least one and no more than a replay can be (what they
+    /// take in memory when played).
+    pub fn length_ok(&self) -> bool {
+        let n: u64 = self.inputs.iter().map(|r| u64::from(r.0)).sum();
+        n == self.steps && n > 0 && n <= MAX_STEPS
+    }
+
+    /// Whether its length is right ([`Self::length_ok`]) and its numbers index only what there is (the roster, the
+    /// CPU's levels, who joins a Force stage): it may be a file someone shared, damaged or made by hand.
+    pub fn sane(&self, roster: &crate::menu::Roster) -> bool {
+        use crate::room::MatchSetup;
+        let pick = |(c, costume): (usize, usize)| roster.characters.get(c).is_some_and(|ch| costume < ch.costumes.len());
+        self.length_ok()
+            && match &self.game {
+                Match::Fight { setup, .. } => MatchSetup::Fight(setup.clone()).numbers_valid(roster),
+                Match::Tag { setup, .. } => MatchSetup::Tag(setup.clone()).numbers_valid(roster),
+                Match::Force { setup, start, joins } => {
+                    MatchSetup::Fight(setup.clone()).numbers_valid(roster)
+                        && pick(start.player)
+                        && start.partner.is_none_or(pick)
+                        && start.more_players.iter().flatten().all(|&(c, costume, _)| pick((c, costume)))
+                        && joins.iter().all(|&(_, who)| (1..=3).contains(&who))
+                }
+            }
+    }
+}
+
+/// A Force replay's join (`Match::Force`'s `joins`: the step it comes before) is due once `played` steps are done.
+pub fn join_due(join: (u64, u8), played: u64) -> bool {
+    join.0 <= played
+}
+
+/// The first of the joins (in order) still to come with `played` steps done: after a seek's restore, its copy taken
+/// before that step's joins.
+pub fn joins_to_come(joins: &[(u64, u8)], played: u64) -> usize {
+    joins.iter().take_while(|j| j.0 < played).count()
 }
 
 /// A replay as listed: where it is, and the file (its inputs too: they are small).
@@ -193,8 +239,7 @@ pub fn import(bytes: &[u8]) -> anyhow::Result<String> {
     use anyhow::Context;
     let mut file: ReplayFile = serde_json::from_slice(bytes).context("this is not an OpenKumite replay file")?;
     anyhow::ensure!(file.version == VERSION, "this replay is of another OpenKumite version (its format {}, this one plays {VERSION})", file.version);
-    let steps = file.inputs.iter().map(|r| u64::from(r.0)).sum::<u64>();
-    anyhow::ensure!(steps == file.steps && steps > 0, "this replay file is damaged");
+    anyhow::ensure!(file.length_ok(), "this replay file is damaged");
     if let Some(e) = list().into_iter().find(|e| e.file.recorded == file.recorded && e.file.hash == file.hash && e.file.inputs == file.inputs) {
         return Ok(e.id);
     }
@@ -306,6 +351,142 @@ mod tests {
         assert_eq!(decode(&runs), steps);
     }
 
+    /// A Force replay seeks back and plays on: each join once, before its step, wherever the seek lands (the copies
+    /// are taken before a step's joins, every 300 steps; a join can fall on one).
+    #[test]
+    fn joins_come_once_each_across_a_seek() {
+        let joins = [(0, 1), (300, 2), (301, 3)];
+        // played straight through: which joins came before which step
+        let play = |from: u64, mut next: usize, to: u64, came: &mut Vec<(u64, u8)>| {
+            for step in from..to {
+                while joins.get(next).is_some_and(|&j| join_due(j, step)) {
+                    came.push((step, joins[next].1));
+                    next += 1;
+                }
+            }
+        };
+        let mut straight = Vec::new();
+        play(0, 0, 900, &mut straight);
+        assert_eq!(straight, joins.to_vec());
+        for back in [0, 1, 299, 300, 301, 302, 600] {
+            let mut came: Vec<_> = straight.iter().copied().filter(|j| j.0 < back).collect();
+            play(back, joins_to_come(&joins, back), 900, &mut came);
+            assert_eq!(came, straight, "seeking back to {back}");
+        }
+    }
+
+    /// A replay's numbers are checked before it plays: a good one plays, one damaged anywhere does not.
+    #[test]
+    fn a_damaged_replay_is_not_played() {
+        let gd = crate::test_assets().join("gamedata");
+        if !kumite_fs::exists(&gd.join("screens.json")) {
+            return;
+        }
+        let roster = crate::menu::Roster::load(&gd);
+        let mut good = file(1);
+        let Match::Fight { setup, .. } = good.game.clone() else { unreachable!() };
+        let start = crate::forcerun::ForceStart {
+            player: (0, 0),
+            selection: 0,
+            player_char: 0,
+            difficulty: 1,
+            player_costume: 0,
+            index: 0,
+            extra: None,
+            pending_final: false,
+            score: 0,
+            hiscore: 0,
+            keys: 0,
+            flags: 0,
+            kills: 0,
+            clock: 0,
+            partner: Some((1, 0)),
+            partner_costume: 0,
+            more_players: [Some((2, 0, 0)), None],
+        };
+        good.game = Match::Force { setup, start, joins: vec![(10, 1), (20, 2)] };
+        assert!(good.sane(&roster));
+        let damage: [fn(&mut ReplayFile); 6] = [
+            |f| f.steps = 2,
+            |f| f.inputs = vec![(u32::MAX, 0, 0); 2],
+            |f| {
+                if let Match::Force { joins, .. } = &mut f.game {
+                    joins.push((30, 7))
+                }
+            },
+            |f| {
+                if let Match::Force { start, .. } = &mut f.game {
+                    start.player.0 = 999
+                }
+            },
+            |f| {
+                if let Match::Force { start, .. } = &mut f.game {
+                    start.more_players[1] = Some((0, 99, 0))
+                }
+            },
+            |f| {
+                if let Match::Force { setup, .. } = &mut f.game {
+                    setup.players[1] = (999, 0)
+                }
+            },
+        ];
+        for (k, d) in damage.iter().enumerate() {
+            let mut f = good.clone();
+            d(&mut f);
+            assert!(!f.sane(&roster), "damage {k} not caught");
+        }
+    }
+
+    /// A file someone shared, damaged anywhere (bytes changed, digits put in, cut short): it does not read, or its
+    /// checks say what it is, never a panic, never more inputs than a replay holds. (The app's own fuzzing: the
+    /// fuzz targets, `fuzz/`, reach only the libraries.)
+    #[test]
+    fn a_damaged_file_never_panics() {
+        let gd = crate::test_assets().join("gamedata");
+        let roster = kumite_fs::exists(&gd.join("screens.json")).then(|| crate::menu::Roster::load(&gd));
+        let mut good = file(9);
+        good.inputs = encode(&[StepInput::default(), StepInput { partner: Pad { start: true, ..Pad::default() }, ..StepInput::default() }]);
+        good.steps = 2;
+        let good = to_bytes(&good).unwrap();
+        let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let (mut read, mut passed) = (0, 0);
+        for _ in 0..20_000 {
+            let mut b = good.clone();
+            // (mostly its numbers: a count, an index, a step; now and then any byte, or the end cut off)
+            for _ in 0..next() % 3 + 1 {
+                let digits: Vec<usize> = (0..b.len()).filter(|&i| b[i].is_ascii_digit()).collect();
+                if digits.is_empty() {
+                    break;
+                }
+                let d = digits[next() as usize % digits.len()];
+                match next() % 8 {
+                    0..=3 => b[d] = b'0' + (next() % 10) as u8,
+                    4..=5 => b.insert(d, b'0' + (next() % 10) as u8),
+                    6 => {
+                        let i = next() as usize % b.len();
+                        b[i] = next() as u8;
+                    }
+                    _ => b.truncate(next() as usize % b.len()),
+                }
+            }
+            let Ok(f) = serde_json::from_slice::<ReplayFile>(&b) else { continue };
+            read += 1;
+            if f.length_ok() {
+                assert!(decode(&f.inputs).len() as u64 <= MAX_STEPS);
+                passed += u32::from(roster.as_ref().is_some_and(|r| f.sane(r)));
+            }
+        }
+        // (enough of them still read, the checks had something to say)
+        assert!(read > 1000, "{read} read");
+        eprintln!("{read} damaged files still read, {passed} passed the checks");
+    }
+
     /// The tests that use the replays' folder, one at a time.
     static FOLDER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -350,6 +531,11 @@ mod tests {
         let mut damaged = file(6);
         damaged.steps = 99;
         assert!(import(&to_bytes(&damaged).unwrap()).unwrap_err().to_string().contains("damaged"));
+        // (longer than a replay can be: its inputs would not fit in memory)
+        let mut huge = file(7);
+        huge.inputs = vec![(u32::MAX, 0, 0); 1000];
+        huge.steps = u64::from(u32::MAX) * 1000;
+        assert!(import(&to_bytes(&huge).unwrap()).unwrap_err().to_string().contains("damaged"));
         let _ = std::fs::remove_dir_all(crate::save::save_dir().join("replays"));
     }
 

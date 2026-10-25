@@ -112,14 +112,22 @@ impl MatchSetup {
     /// computer, and its numbers index the roster, the stages, the ladders.
     pub fn valid(&self, roster: &crate::menu::Roster) -> bool {
         use crate::menu::Mode;
+        match self {
+            MatchSetup::Fight(f) => matches!(f.mode, Mode::Versus | Mode::Ball) && roster.is_stage(f.stage) && self.numbers_valid(roster),
+            MatchSetup::Tag(_) => self.numbers_valid(roster),
+        }
+    }
+
+    /// Whether its numbers index only what there is (the roster, the ladders, the CPU's levels), whatever its mode
+    /// and stage: a replay's setup, from a file someone shared, too (a stage not there loads as a plain floor).
+    pub fn numbers_valid(&self, roster: &crate::menu::Roster) -> bool {
+        use crate::menu::Mode;
         let pick = |(c, costume): (usize, usize)| roster.characters.get(c).is_some_and(|ch| costume < ch.costumes.len());
         let player = |p: Option<usize>| p.is_none_or(|p| p < MAX_PLAYERS);
         match self {
             MatchSetup::Fight(f) => {
                 let ball = f.mode == Mode::Ball;
-                matches!(f.mode, Mode::Versus | Mode::Ball)
-                    && f.players.iter().all(|&p| pick(p) || ball && p.0 == crate::menu::CPU_SIDE)
-                    && roster.is_stage(f.stage)
+                f.players.iter().all(|&p| pick(p) || ball && p.0 == crate::menu::CPU_SIDE)
                     && f.difficulty < crate::menu::DIFFICULTIES.len()
                     && f.level < crate::menu::CPU_LEVELS
                     && f.handicap.iter().all(|&h| roster.grid.allows(h))

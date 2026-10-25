@@ -228,9 +228,11 @@ impl Export {
 
 impl Drop for Export {
     fn drop(&mut self) {
-        // (the game closing: an unfinished video is not left half made)
+        // (the game closing: an unfinished video is not left half made; a finished one's process is reaped)
         if self.running() {
             self.cancel();
+        } else if let Some(mut c) = self.child.take() {
+            let _ = c.wait();
         }
     }
 }
