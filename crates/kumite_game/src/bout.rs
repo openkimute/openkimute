@@ -26,6 +26,59 @@ static INTRO_COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// Winner camera A / B toggle (0x800A049C) and the replay camera's variant toggle (0x800A04CC): B first.
 static WINNER_TOGGLE: AtomicUsize = AtomicUsize::new(0);
 static REPLAY_TOGGLE: AtomicUsize = AtomicUsize::new(0);
+/// The camera counters as they are now (a replay records them: a bout starts from them).
+pub fn counters() -> [usize; 3] {
+    COUNTERS.map(|c| c.load(Ordering::Relaxed))
+}
+
+/// Set the camera counters (a replay's, before its bout is made; the ones before it, after).
+pub fn set_counters(values: [usize; 3]) {
+    for (c, v) in COUNTERS.iter().zip(values) {
+        c.store(v, Ordering::Relaxed);
+    }
+}
+
+/// One step's input to a match, as [`Bout::step`] takes it: its two pads, and the seats' pads set before it (Force's
+/// and Ball's partner, Ball's other partner played by a person, 3P and 4P).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StepInput {
+    pub pads: [Pad; 2],
+    pub partner: Pad,
+    pub extra: Option<Pad>,
+    pub more: [Option<Pad>; 2],
+}
+
+/// A match's inputs, step by step from its first (a replay). Filled chunks are shared by the match's copies (online,
+/// the rollback copies the match every frame; a copy restored takes the tape back to its length).
+#[derive(Clone, Default)]
+pub struct Tape {
+    chunks: Vec<Arc<[StepInput]>>,
+    open: Vec<StepInput>,
+}
+
+impl Tape {
+    const CHUNK: usize = 512;
+
+    pub fn push(&mut self, input: StepInput) {
+        self.open.push(input);
+        if self.open.len() == Self::CHUNK {
+            self.chunks.push(std::mem::take(&mut self.open).into());
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.chunks.len() * Self::CHUNK + self.open.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn to_vec(&self) -> Vec<StepInput> {
+        self.chunks.iter().flat_map(|c| c.iter().copied()).chain(self.open.iter().copied()).collect()
+    }
+}
+
 /// The three, in this order: a bout counts on its own copy (rolled back with it: online, every computer counts
 /// alike) and writes it back for the next bout. Online the statics then hold a mispredicted frame's count at times:
 /// a bout must never be made inside a rollback session, only between matches, after [`reset_camera_counters`].
@@ -160,6 +213,10 @@ pub struct Bout {
     /// (3P, 4P).
     pub more_cpu: Vec<Option<Ai>>,
     pub more_human: Vec<Option<Pad>>,
+    /// The match's inputs recorded as it is played (a replay), when on.
+    pub tape: Option<Tape>,
+    /// A replay played: its inputs, and the next step's.
+    playback: Option<(Arc<[StepInput]>, usize)>,
     /// The camera counters (intro variant, winner camera, replay camera): see [`COUNTERS`].
     counters: [usize; 3],
 }
@@ -197,6 +254,8 @@ impl Bout {
             extra_human: None,
             more_cpu: Vec::new(),
             more_human: Vec::new(),
+            tape: None,
+            playback: None,
         };
         b.next_round();
         b
@@ -211,6 +270,35 @@ impl Bout {
             (self.round, self.wins) = (0, [0; 2]);
         }
         self.next_round();
+    }
+
+    /// Play the match from these inputs (a replay): each step takes the next, whatever is passed to it.
+    pub fn play(&mut self, inputs: Arc<[StepInput]>) {
+        self.playback = Some((inputs, 0));
+    }
+
+    /// The steps played from a replay's inputs so far.
+    pub fn played(&self) -> usize {
+        self.playback.as_ref().map_or(0, |p| p.1)
+    }
+
+    /// This step's people's input: the replay's (its seats' pads set), or `pads` with the seats as set, recorded on
+    /// the tape. (The CPUs decide after, from the match: in a replay as when it was played.)
+    fn taped(&mut self, pads: [Pad; 2]) -> [Pad; 2] {
+        if let Some((inputs, at)) = self.playback.as_mut() {
+            let s = inputs.get(*at).copied().unwrap_or_default();
+            *at += 1;
+            (self.partner_pad, self.extra_human) = (s.partner, s.extra);
+            for (slot, pad) in self.more_human.iter_mut().zip(s.more) {
+                *slot = pad;
+            }
+            return s.pads;
+        }
+        if let Some(tape) = self.tape.as_mut() {
+            let more = std::array::from_fn(|k| self.more_human.get(k).copied().flatten());
+            tape.push(StepInput { pads, partner: self.partner_pad, extra: self.extra_human, more });
+        }
+        pads
     }
 
     /// Make player `i` CPU-controlled (difficulty 0..2 = EASY/MEDIUM/HARD, level 0..9), or human.
@@ -313,6 +401,7 @@ impl Bout {
 
     /// One 60 Hz step. `pads` are used for the human players; CPU players think for themselves.
     pub fn step(&mut self, pads: [Pad; 2]) {
+        let pads = self.taped(pads);
         self.events.clear();
         // START pressed (online: from the pads, every computer on the same frame) skips the replay or the win pose
         let start = |p: &[Pad; 2]| p.iter().any(|p| p.start);

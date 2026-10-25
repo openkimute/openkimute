@@ -1075,6 +1075,8 @@ pub enum Outcome {
     StartForce((usize, usize), usize),
     /// THEATER MODE from the main menu.
     OpenTheater,
+    /// REPLAYS from the main menu.
+    OpenReplays,
     /// EXIT from the main menu: leave the game.
     Exit,
     /// TAG BRAWL's setup is done: the match.
@@ -1125,6 +1127,8 @@ enum Entry {
     ExtraLevels,
     /// OpenKumite's own: VS online (a room code or an IP).
     Online,
+    /// OpenKumite's own: the matches recorded, to watch again.
+    Replays,
 }
 
 fn entry_of(item: &MenuItem) -> Option<Entry> {
@@ -1155,6 +1159,8 @@ fn shown_items(roster: &Roster) -> Vec<(MenuItem, Entry)> {
         if !roster.extra_levels.is_empty() {
             items.insert(at + 2, (MenuItem { name: roster.extra_levels_title.clone(), mode: u32::MAX - 2, colour: 5 }, Entry::ExtraLevels));
         }
+        let at = items.iter().position(|i| i.1 == Entry::Options).unwrap_or(items.len());
+        items.insert(at, (MenuItem { name: "REPLAYS".into(), mode: u32::MAX - 4, colour: 6 }, Entry::Replays));
     }
     if cfg!(not(target_arch = "wasm32")) && !items.is_empty() {
         items.push((MenuItem { name: "EXIT".into(), mode: u32::MAX, colour: 2 }, Entry::Exit));
@@ -1291,6 +1297,9 @@ impl Screen {
                         if items[m.cursor].1 == Entry::Theater {
                             return Outcome::OpenTheater;
                         }
+                        if items[m.cursor].1 == Entry::Replays {
+                            return Outcome::OpenReplays;
+                        }
                         if items[m.cursor].1 == Entry::Exit {
                             return Outcome::Exit;
                         }
@@ -1304,7 +1313,7 @@ impl Screen {
                             Entry::Tag => Screen::TagModes { frame: 0, cursor: 1, difficulty: m.difficulty },
                             Entry::Online => Screen::Online(Box::new(crate::onlinemenu::OnlineMenu::new(*seed, m.difficulty))),
                             Entry::ExtraLevels => Screen::ExtraLevels { frame: 0, cursor: 0, difficulty: m.difficulty },
-                            Entry::Options | Entry::Theater | Entry::Exit => Screen::Options { frame: 0, cursor: 0, difficulty: m.difficulty },
+                            Entry::Options | Entry::Theater | Entry::Exit | Entry::Replays => Screen::Options { frame: 0, cursor: 0, difficulty: m.difficulty },
                         };
                     }
                     Key::Back => *self = Screen::Title { frame: WHITE_OUT, difficulty: m.difficulty },
