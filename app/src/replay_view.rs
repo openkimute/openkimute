@@ -7,6 +7,7 @@
 //! starts noted, and the end checked against the recorded state. A seek takes the copy before the step and runs on
 //! to it.
 
+use crate::hud::{tag::TagHud, HudState};
 use crate::replay::{self, Entry, ReplayFile};
 use egui::{Align2, Color32, RichText};
 use kumite_game::bout::Bout;
@@ -30,13 +31,17 @@ pub enum Request {
     Exit,
 }
 
-/// The match at a step, of whichever kind (what a seek starts from).
+/// The match at a step, of whichever kind, with its HUD (what a seek starts from).
 #[derive(Clone)]
 pub enum Snapshot {
-    Fight(Box<Bout>),
-    /// A Force stage: the fight, and the run with its stage.
-    Force(Box<Bout>, Box<crate::forcerun::ForceRun>),
-    Tag(Box<kumite_game::tag::TagGame>),
+    /// A fight (a Force stage's: with the run and its stage), its HUD and what its sounds go by.
+    Fight {
+        bout: Box<Bout>,
+        force: Option<Box<crate::forcerun::ForceRun>>,
+        hud: HudState,
+        heard: Box<crate::Heard>,
+    },
+    Tag(Box<kumite_game::tag::TagGame>, Box<TagHud>),
 }
 
 pub struct View {

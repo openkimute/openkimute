@@ -328,6 +328,14 @@ impl HudData {
 
 pub struct Hud {
     pub data: HudData,
+    pub state: HudState,
+    /// The camera's projection (metres to clip space), for texts over the 3D scene; set by the app each frame.
+    pub view_proj: Option<glam::Mat4>,
+}
+
+/// What the HUD counts step by step (a replay's seek copies keep it: the bars and the run's time as they were).
+#[derive(Clone, Debug, Default)]
+pub struct HudState {
     /// Per player: shown width (grows 3 px a frame at round start, drops at once) and the trail edge.
     shown: [i32; 2],
     trail: [i32; 2],
@@ -341,8 +349,6 @@ pub struct Hud {
     run_frames: u32,
     /// Ball: the charge gauges and the floating texts.
     ball: BallHud,
-    /// The camera's projection (metres to clip space), for texts over the 3D scene; set by the app each frame.
-    pub view_proj: Option<glam::Mat4>,
 }
 
 /// Ball's HUD state (record 8 0x800B49A8 gauges, 0x800B3F98 floating texts).
@@ -358,21 +364,21 @@ struct BallHud {
 
 impl Hud {
     pub fn new(data: HudData) -> Self {
-        Self { data, shown: [0; 2], trail: [0; 2], ko: None, wins_at_start: [0; 2], round: 0, frame: 0, run_frames: 0, ball: BallHud::default(), view_proj: None }
+        Self { data, state: HudState::default(), view_proj: None }
     }
 
     /// A new fight; the arcade run's time starts again at stage 1 (Time Attack: from its run's time).
     pub fn reset(&mut self, info: &HudInfo) {
         if let Some(base) = info.time_base {
-            self.run_frames = base;
+            self.state.run_frames = base;
         } else if info.stage.is_none_or(|s| s <= 1) {
-            self.run_frames = 0;
+            self.state.run_frames = 0;
         }
-        self.shown = [0; 2];
-        self.trail = [0; 2];
-        self.ko = None;
-        self.round = 0;
-        self.ball = BallHud::default();
+        self.state.shown = [0; 2];
+        self.state.trail = [0; 2];
+        self.state.ko = None;
+        self.state.round = 0;
+        self.state.ball = BallHud::default();
     }
 
     /// Ball's gauges (two bars filling towards the middle, the owner's flashing while the ball has power) and the
@@ -380,10 +386,10 @@ impl Hud {
     fn draw_ball(&self, painter: &egui::Painter, v: &View, art: &Art) {
         let src: &[&str] = &["exe"];
         let g = &self.data.ball;
-        for (i, &(_, _, shown, trail)) in self.ball.gauges.iter().enumerate() {
+        for (i, &(_, _, shown, trail)) in self.state.ball.gauges.iter().enumerate() {
             let (x, y) = (g.x[i], g.y);
-            let tint = if self.ball.flash == Some(i) {
-                let b = crate::menu::triangle(self.frame << 4);
+            let tint = if self.state.ball.flash == Some(i) {
+                let b = crate::menu::triangle(self.state.frame << 4);
                 Color32::from_gray(((0x80 + b / 2).min(255)) as u8)
             } else {
                 Color32::WHITE
@@ -405,7 +411,7 @@ impl Hud {
             }
         }
         let Some(vp) = self.view_proj else { return };
-        for (s, c, world, life) in &self.ball.texts {
+        for (s, c, world, life) in &self.state.ball.texts {
             let clip = vp * (*world / kumite_game::UNITS).extend(1.0);
             if clip.w <= 0.0 {
                 continue;
@@ -428,9 +434,9 @@ impl Hud {
     /// mm'ss"cc (record 5 0x800B19B0).
     fn stage_time(&self, painter: &egui::Painter, v: &View, art: &Art, stage: u32, x: f32, y: f32) {
         let d = &self.data;
-        let label = if stage >= d.final_from && self.frame & 0x20 == 0 { d.stage_final.clone() } else { crate::art::printf(&d.stage_format, &[stage]) };
+        let label = if stage >= d.final_from && self.state.frame & 0x20 == 0 { d.stage_final.clone() } else { crate::art::printf(&d.stage_format, &[stage]) };
         art.text(painter, v, 0, d.stage_colour, x, y, &label, Color32::WHITE);
-        let f = self.run_frames.min(359_999);
+        let f = self.state.run_frames.min(359_999);
         let parts = [f / 3600, f / 60 % 60, f % 60 * 100 / 60];
         for (k, p) in parts.iter().enumerate() {
             art.text(painter, v, 0, d.time_colour, x + d.time_dx[k], y, &format!("{p:02}"), Color32::WHITE);
@@ -442,9 +448,9 @@ impl Hud {
 
     /// Per simulation step (0x8004E274's width rules, round-start latches).
     pub fn step(&mut self, bout: &Bout) {
-        self.frame += 1;
+        self.state.frame += 1;
         if let Some(b) = &bout.game.fight.ball {
-            let h = &mut self.ball;
+            let h = &mut self.state.ball;
             for (i, g) in h.gauges.iter_mut().enumerate() {
                 let v = b.charge[i];
                 let w = self.data.ball.w;
@@ -470,18 +476,18 @@ impl Hud {
             }
         }
         if bout.phase == Phase::Fight {
-            self.run_frames = (self.run_frames + 1).min(100 * 60 * 60 - 1);
+            self.state.run_frames = (self.state.run_frames + 1).min(100 * 60 * 60 - 1);
         }
-        if bout.round != self.round {
-            self.round = bout.round;
-            self.shown = [0; 2];
-            self.trail = [0; 2];
-            self.ko = None;
-            self.wins_at_start = bout.wins;
+        if bout.round != self.state.round {
+            self.state.round = bout.round;
+            self.state.shown = [0; 2];
+            self.state.trail = [0; 2];
+            self.state.ko = None;
+            self.state.wins_at_start = bout.wins;
         }
         for e in &bout.events {
             if matches!(e, Announcement::TimeUp | Announcement::Perfect | Announcement::DoubleKo | Announcement::Great | Announcement::Ko) {
-                self.ko = Some(*e);
+                self.state.ko = Some(*e);
             }
         }
         let fight = &bout.game.fight;
@@ -492,7 +498,7 @@ impl Hud {
             let unit = (max / bar_w.max(1)).max(1);
             let hp = fight.fighters[i].health.max(0) as i64;
             let target = ((hp + unit - 1) / unit).min(bar_w) as i32;
-            (self.shown[i], self.trail[i]) = bar_step(self.shown[i], self.trail[i], target);
+            (self.state.shown[i], self.state.trail[i]) = bar_step(self.state.shown[i], self.state.trail[i], target);
         }
     }
 
@@ -509,7 +515,7 @@ impl Hud {
             // health bars: fill, trail and empty strips (a 1-texel column stretched), then the end caps
             for i in 0..2 {
                 let [x, y] = d.bar_xy[i];
-                draw_bar(d, &painter, &v, art, [x, y], i, self.shown[i], self.trail[i]);
+                draw_bar(d, &painter, &v, art, [x, y], i, self.state.shown[i], self.state.trail[i]);
             }
             // Ball 2 ON 2 (OpenKumite's own): each partner's health, a thin bar under its side's
             if bout.game.fight.ball_doubles() {
@@ -542,7 +548,7 @@ impl Hud {
                     for k in 0..size {
                         let x = tm.x[i] + tm.step[i] * k as f32;
                         let lost = k < down;
-                        let blink = just && k + 1 == down && self.frame & 0x10 == 0;
+                        let blink = just && k + 1 == down && self.state.frame & 0x10 == 0;
                         let t = Tex { clut: Some(tm.cluts[usize::from(lost && !blink)]), ..tm.icon };
                         // P2's are mirrored
                         let (x0, qw) = if i == 0 { (x, w as f32) } else { (x + w as f32, -(w as f32)) };
@@ -557,8 +563,8 @@ impl Hud {
             for i in (0..2).filter(|_| info.team.is_none()) {
                 let wins = bout.wins[i];
                 for k in 0..bout.rounds_to_win {
-                    let newest = k + 1 == wins && self.wins_at_start[i] != wins;
-                    let won = k < wins && (!newest || self.frame & 0x10 != 0);
+                    let newest = k + 1 == wins && self.state.wins_at_start[i] != wins;
+                    let won = k < wins && (!newest || self.state.frame & 0x10 != 0);
                     let t = Tex { page: d.bar_page, bpp: 4, u: d.gem_uv[0], v: d.gem_uv[1], clut: Some(d.gem_cluts[usize::from(!won)]) };
                     art.sprite(&painter, &v, src, &t, d.gem_size[0], d.gem_size[1], d.gem_x[i] + d.gem_step[i] * k as f32, d.gem_y, Color32::WHITE);
                 }
@@ -575,7 +581,7 @@ impl Hud {
                 match under {
                     Under::None => {}
                     Under::Push => {
-                        if self.frame & 0x30 != 0 {
+                        if self.state.frame & 0x30 != 0 {
                             if let Some(t) = d.push.get(i) {
                                 art.text(&painter, &v, 0, d.push_colour, d.under_centre[i] - d.push_half[i], y, t, Color32::WHITE);
                             }
@@ -594,9 +600,9 @@ impl Hud {
         // over the bars: arcade's stage and run time on P1's side, PUSH START blinking on the CPU's
         if let (Some(stage), false) = (info.stage, replay) {
             let (y, x) = (d.under_y, d.under_x[0]);
-            let label = if stage >= d.final_from && self.frame & 0x20 == 0 { d.stage_final.clone() } else { crate::art::printf(&d.stage_format, &[stage]) };
+            let label = if stage >= d.final_from && self.state.frame & 0x20 == 0 { d.stage_final.clone() } else { crate::art::printf(&d.stage_format, &[stage]) };
             art.text(&painter, &v, 0, d.stage_colour, x, y, &label, Color32::WHITE);
-            let f = self.run_frames;
+            let f = self.state.run_frames;
             let parts = [f / 3600, f / 60 % 60, f % 60 * 100 / 60];
             for (k, p) in parts.iter().enumerate() {
                 art.text(&painter, &v, 0, d.time_colour, x + d.time_dx[k], y, &format!("{p:02}"), Color32::WHITE);
@@ -604,7 +610,7 @@ impl Hud {
             for (k, m) in ["'", "\""].iter().enumerate() {
                 art.text(&painter, &v, 0, d.time_colour, x + d.marks_dx[k], y + d.marks_dy, m, Color32::WHITE);
             }
-            if self.frame & 0x30 != 0 {
+            if self.state.frame & 0x30 != 0 {
                 if let Some(t) = d.push.get(1) {
                     art.text(&painter, &v, 0, d.push_colour, d.under_centre[1] - d.push_half[1], y, t, Color32::WHITE);
                 }
@@ -649,7 +655,7 @@ impl Hud {
             }
             Phase::RoundOver { winner } | Phase::Result { winner } | Phase::MatchOver { winner } => {
                 if matches!(bout.phase, Phase::RoundOver { .. }) {
-                    let t = match self.ko {
+                    let t = match self.state.ko {
                         Some(Announcement::TimeUp) => &d.time_up,
                         Some(Announcement::Perfect) => &d.perfect,
                         Some(Announcement::DoubleKo) => &d.double_ko,

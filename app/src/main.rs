@@ -258,16 +258,12 @@ struct Fight {
     rules: bool,
     /// Practice mode: its menu, dummy and attack data.
     practice: Option<practice::Practice>,
-    /// The fight sounds of each recorded frame (aligned with the game's replay record), replayed with it.
-    sound_log: std::collections::VecDeque<Vec<kumite_game::sound::Sound>>,
-    /// Record frames logged so far this round.
-    logged: u64,
+    /// What the fight's sounds go by (a replay's seek copies keep it).
+    heard: Heard,
     /// Sound banks ("m071"), character ids and voice rows (+0x1A) of the two fighters.
     banks: [String; 2],
     characters: [usize; 2],
     voices: [usize; 2],
-    /// Each fighter's move before the last step (for sound triggers).
-    last_moves: kumite_game::sound::SoundState,
     /// The boss-change scene, while it runs.
     cutscene: Option<Cutscene>,
     /// The hanging / flapping joints' go-over between clips (drawing).
@@ -278,6 +274,71 @@ struct Fight {
     extra_voice: Option<(String, usize)>,
     /// Ball 2 ON 2: who plays each actor (0, 1 the sides' first, 2 the other side's partner, 3 P1's side's).
     seats: Option<[Option<usize>; 4]>,
+}
+
+/// What a fight's sounds go by: each fighter's move before the last step (the sound triggers), and the sounds of each
+/// recorded frame (aligned with the game's replay record), replayed with it.
+#[derive(Clone, Default)]
+pub(crate) struct Heard {
+    last_moves: kumite_game::sound::SoundState,
+    log: std::collections::VecDeque<Vec<kumite_game::sound::Sound>>,
+    /// Record frames logged so far this round.
+    logged: u64,
+}
+
+impl Fight {
+    /// The fighters' sounds of the step just made (see [`Heard::step`]).
+    fn step_sounds(&mut self, sound: &kumite_game::sound::SoundData) -> Vec<kumite_game::sound::Sound> {
+        let banks = [self.banks[0].as_str(), self.banks[1].as_str()];
+        let partner = self.partner.as_ref().map(|(b, c)| (b.as_str(), *c));
+        let extra = self.extra_voice.as_ref().map(|(b, c)| (b.as_str(), *c));
+        self.heard.step(sound, &self.bout, banks, self.voices, partner, extra)
+    }
+}
+
+impl Heard {
+    /// The fighters' sounds of the step `bout` just made, logged with the frame the game recorded; in the game's
+    /// replay of a K.O., the ones logged with its frames.
+    fn step(
+        &mut self,
+        sound: &kumite_game::sound::SoundData,
+        bout: &Bout,
+        banks: [&str; 2],
+        voices: [usize; 2],
+        partner: Option<(&str, usize)>,
+        extra: Option<(&str, usize)>,
+    ) -> Vec<kumite_game::sound::Sound> {
+        let game = &bout.game;
+        // the replay plays the sounds recorded with its frames, on each new frame (even half-frames)
+        if let Some((k, new)) = bout.replay_frame() {
+            let first = game.recorded_total - game.recorded.len() as u64;
+            let log_first = self.logged - self.log.len() as u64;
+            let at = (first + k as u64).checked_sub(log_first);
+            let replayed: Vec<_> = if new { at.and_then(|i| self.log.get(i as usize)).cloned().unwrap_or_default() } else { Vec::new() };
+            if !replayed.is_empty() {
+                log::debug!("replay frame {k}: {} sounds", replayed.len());
+            }
+            return replayed;
+        }
+        let sounds = sound.step_with_partner(bout, &mut self.last_moves, banks, voices, partner, extra);
+        // log them with the frame the game just recorded (a new round starts the record again)
+        if game.recorded_total < self.logged {
+            self.log.clear();
+            self.logged = 0;
+        }
+        if game.recorded_total > self.logged {
+            while self.logged + 1 < game.recorded_total {
+                self.log.push_back(Vec::new());
+                self.logged += 1;
+            }
+            self.log.push_back(sounds.clone());
+            self.logged += 1;
+            while self.log.len() > game.recorded.len() {
+                self.log.pop_front();
+            }
+        }
+        sounds
+    }
 }
 
 struct App {
@@ -699,12 +760,10 @@ impl App {
             pause: None,
             rules: false,
             practice,
-            sound_log: Default::default(),
-            logged: 0,
+            heard: Heard { last_moves, ..Default::default() },
             banks,
             characters,
             voices,
-            last_moves,
             cutscene: None,
             partner: None,
             extra_voice: None,
@@ -771,33 +830,29 @@ impl App {
     fn replay_snapshot(&self) -> Option<replay_view::Snapshot> {
         use replay_view::Snapshot as S;
         if let Some(t) = self.tag.as_ref() {
-            return Some(S::Tag(Box::new(t.game.clone())));
+            return Some(S::Tag(Box::new(t.game.clone()), Box::new(t.hud.clone())));
         }
         let f = self.fight.as_ref()?;
-        Some(match self.force.as_ref().filter(|_| self.force_fight()) {
-            Some(run) => S::Force(Box::new(f.bout.clone()), Box::new(run.clone())),
-            None => S::Fight(Box::new(f.bout.clone())),
-        })
+        let force = self.force.as_ref().filter(|_| self.force_fight()).map(|run| Box::new(run.clone()));
+        Some(S::Fight { bout: Box::new(f.bout.clone()), force, hud: self.hud.state.clone(), heard: Box::new(f.heard.clone()) })
     }
 
     fn replay_restore(&mut self, snap: replay_view::Snapshot) {
         use replay_view::Snapshot as S;
         match snap {
-            S::Tag(g) => {
+            S::Tag(g, hud) => {
                 if let Some(t) = self.tag.as_mut() {
-                    t.game = *g;
+                    (t.game, t.hud) = (*g, *hud);
                 }
             }
-            S::Fight(b) => {
+            S::Fight { bout, force, hud, heard } => {
                 if let Some(f) = self.fight.as_mut() {
-                    f.bout = *b;
+                    (f.bout, f.heard) = (*bout, *heard);
                 }
-            }
-            S::Force(b, run) => {
-                if let Some(f) = self.fight.as_mut() {
-                    f.bout = *b;
+                if let Some(run) = force {
+                    self.force = Some(*run);
                 }
-                self.force = Some(*run);
+                self.hud.state = hud;
             }
         }
         // (the joins still to come: from this step on)
@@ -856,11 +911,12 @@ impl App {
         }
     }
 
-    /// One step of the replay's match, without its sounds and effects (the run-through, a seek): the fight's or the
-    /// tag brawl's, a Force stage's logic after it.
+    /// One step of the replay's match, its sounds not played and without effects (the run-through, a seek): the
+    /// fight's or the tag brawl's, a Force stage's logic after it, then the HUD's (and the sounds' log).
     fn replay_sim_step(&mut self) {
         if let Some(t) = self.tag.as_mut() {
             t.game.step([Pad::default(); 4]);
+            t.hud.step(&t.game, self.hud.data.bar_w());
             return;
         }
         self.replay_quiet = true;
@@ -874,6 +930,12 @@ impl App {
             if let Some(st) = run.stage.as_mut() {
                 let _ = force_sim(&self.roster, &self.assets, &self.actor_cache, &ctx, &mut f.bout, st, false);
             }
+        }
+        if let Some(f) = self.fight.as_mut() {
+            if let Some(sound) = self.sound.as_ref() {
+                f.step_sounds(sound);
+            }
+            self.hud.step(&f.bout);
         }
     }
 
@@ -1549,43 +1611,7 @@ impl App {
             self.rumble.fight(g, &g.data, &[(&g.fighters[0], 0, 1), (&g.fighters[1], 1, 0)]);
         }
         if let Some(sound) = &self.sound {
-            let banks = [fight.banks[0].as_str(), fight.banks[1].as_str()];
-            let game = &fight.bout.game;
-            // the replay plays the sounds recorded with its frames, on each new frame (even half-frames)
-            let mut sounds = match fight.bout.replay_frame() {
-                Some((k, new)) => {
-                    let first = game.recorded_total - game.recorded.len() as u64;
-                    let log_first = fight.logged - fight.sound_log.len() as u64;
-                    let at = (first + k as u64).checked_sub(log_first);
-                    let replayed: Vec<_> = if new { at.and_then(|i| fight.sound_log.get(i as usize)).cloned().unwrap_or_default() } else { Vec::new() };
-                    if !replayed.is_empty() {
-                        log::debug!("replay frame {k}: {} sounds", replayed.len());
-                    }
-                    replayed
-                }
-                None => {
-                    let partner = fight.partner.as_ref().map(|(b, c)| (b.as_str(), *c));
-                    let extra = fight.extra_voice.as_ref().map(|(b, c)| (b.as_str(), *c));
-                    let sounds = sound.step_with_partner(&fight.bout, &mut fight.last_moves, banks, fight.voices, partner, extra);
-                    // log them with the frame the game just recorded (a new round starts the record again)
-                    if game.recorded_total < fight.logged {
-                        fight.sound_log.clear();
-                        fight.logged = 0;
-                    }
-                    if game.recorded_total > fight.logged {
-                        while fight.logged + 1 < game.recorded_total {
-                            fight.sound_log.push_back(Vec::new());
-                            fight.logged += 1;
-                        }
-                        fight.sound_log.push_back(sounds.clone());
-                        fight.logged += 1;
-                        while fight.sound_log.len() > game.recorded.len() {
-                            fight.sound_log.pop_front();
-                        }
-                    }
-                    sounds
-                }
-            };
+            let mut sounds = fight.step_sounds(sound);
             // the announcer: round calls, results, the match winner (YOU WIN if a human won)
             let humans = [fight.bout.cpu[0].is_none(), fight.bout.cpu[1].is_none()];
             sounds.extend(fight.bout.events.iter().filter_map(|&e| sound.announce(e, humans)));
@@ -1885,9 +1911,6 @@ impl App {
         }
         if let Some(vfx) = self.vfx.as_mut() {
             vfx.clear();
-        }
-        if let Some(f) = self.fight.as_ref() {
-            self.hud.reset(&f.info);
         }
         self.lag = Duration::ZERO;
     }
@@ -3313,12 +3336,10 @@ impl App {
             pause: None,
             rules: false,
             practice: None,
-            sound_log: Default::default(),
-            logged: 0,
+            heard: Heard::default(),
             banks,
             characters,
             voices,
-            last_moves: Default::default(),
             cutscene: None,
             partner: None,
             extra_voice: None,
@@ -6122,6 +6143,8 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
                 app.input_key(p, k);
             }
         }
+        // (a replay's seeks: at once, as each drawn frame does)
+        app.replay_requests();
         app.step();
     }
     // egui lays windows out on the first frame and fades them in over a few more
@@ -6138,6 +6161,11 @@ fn screenshot(app: &mut App, path: &str, frames: u64, ui: bool, screen: Option<&
         let (a1, f1) = f.fighters[1].animation(&f.data);
         log::info!("after {frames} frames: P1 {a0}@{f0} hp {} | P2 {a1}@{f1} hp {} | {:?} | {:?} wins {:?}", hp(0), hp(1), f.state, fight.bout.phase, fight.bout.wins);
         log::info!("camera {:?} (intro {}); samples {:?}", g.camera.view, g.camera.in_intro(), g.camera_samples());
+    }
+    // a replay: where it is, and what shows (the seek's integration test compares these)
+    if app.replay_view.is_some() {
+        let hud = app.tag.as_ref().map_or_else(|| format!("{:?}", app.hud.state), |t| format!("{:?}", t.hud));
+        log::info!("replay at step {}, state {:016x}, HUD {hud}", app.replay_played(), app.match_hash());
     }
     if let Some(t) = &app.tag {
         let g = &t.game;
@@ -6690,4 +6718,82 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
         EventLoop::new()?.spawn_app(app);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A CPU-vs-CPU match on the test assets, with its HUD and the sound data (None: no test assets).
+    fn cpu_match() -> Option<(Bout, hud::Hud, kumite_game::sound::SoundData)> {
+        let assets = Assets::new(test_assets()).map_err(|e| eprintln!("skipping: {e:#}")).ok()?;
+        let roster = menu::Roster::load(&assets.root.join("gamedata"));
+        let mut bout = Bout::new(Game::load(&assets, [131, 71]).ok()?, kumite_game::ai_data(&assets).ok()?, 2, true);
+        bout.set_cpu(0, Some((1, 0)));
+        bout.set_cpu(1, Some((1, 0)));
+        let hud = hud::Hud::new(hud::HudData::load(&roster.screens, &roster.ball_hud));
+        Some((bout, hud, kumite_game::sound::SoundData::load(&assets).ok()?))
+    }
+
+    /// A step of the match, its HUD and its sounds, as a replay plays it (and as its run-through and seeks do).
+    fn step(bout: &mut Bout, hud: &mut hud::Hud, heard: &mut Heard, sound: &kumite_game::sound::SoundData) -> Vec<kumite_game::sound::Sound> {
+        bout.step([Pad::default(); 2]);
+        hud.step(bout);
+        heard.step(sound, bout, ["m131", "m071"], [0, 1], None, None)
+    }
+
+    /// A seek starts from a copy of the match: the HUD and the sounds' log go on from it as when played straight (the
+    /// health bars as full as they were, the run's time on; the K.O.'s replay with the sounds of its frames).
+    #[test]
+    fn a_seek_copy_goes_on_as_the_match_played_straight() {
+        let Some((mut bout, mut hud, sound)) = cpu_match() else { return };
+        let mut heard = Heard::default();
+        let mut copy = None;
+        let mut straight = Vec::new();
+        let mut replayed_sounds = 0;
+        for n in 0..60 * 60 * 5 {
+            if n == 1200 {
+                copy = Some((bout.clone(), hud.state.clone(), heard.clone()));
+            }
+            let s = step(&mut bout, &mut hud, &mut heard, &sound);
+            replayed_sounds += if bout.replay_frame().is_some() { s.len() } else { 0 };
+            if n >= 1200 {
+                straight.push((s, format!("{:?}", hud.state)));
+            }
+            if bout.finished() {
+                break;
+            }
+        }
+        assert!(bout.finished(), "the match ends");
+        assert!(replayed_sounds > 0, "a K.O.'s replay plays the sounds logged with its frames");
+        let (mut bout, state, mut heard) = copy.expect("a copy");
+        hud.state = state;
+        for (k, (sounds, hud_then)) in straight.iter().enumerate() {
+            let s = step(&mut bout, &mut hud, &mut heard, &sound);
+            assert_eq!(&s, sounds, "the sounds {k} steps after the copy");
+            assert_eq!(&format!("{:?}", hud.state), hud_then, "the HUD {k} steps after the copy");
+        }
+    }
+
+    /// The HUD a seek starts from is the copy's, not a new round's: the bars full, the K.O. text and the run's time
+    /// kept.
+    #[test]
+    fn a_seek_copy_keeps_the_bars_shown() {
+        let Some((mut bout, mut hud, _)) = cpu_match() else { return };
+        for _ in 0..600 {
+            bout.step([Pad::default(); 2]);
+            hud.step(&bout);
+        }
+        let copy = hud.state.clone();
+        let mut fresh = hud::Hud::new(hud.data.clone());
+        fresh.state = copy;
+        let mut reset = hud::Hud::new(hud.data.clone());
+        reset.reset(&hud::HudInfo::default());
+        bout.step([Pad::default(); 2]);
+        for h in [&mut hud, &mut fresh, &mut reset] {
+            h.step(&bout);
+        }
+        assert_eq!(format!("{:?}", fresh.state), format!("{:?}", hud.state));
+        assert_ne!(format!("{:?}", reset.state), format!("{:?}", hud.state), "a reset HUD shows other bars");
+    }
 }
