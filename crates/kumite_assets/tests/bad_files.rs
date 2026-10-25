@@ -122,6 +122,17 @@ fn a_bad_glb_is_an_error_without_a_panic() {
     big[at + 16..at + 24].copy_from_slice(&[0, 0, 16, 0, 0, 0, 16, 0]);
     j["images"] = vec![j["images"][0].clone(); 2].into();
     bad.push(("texture_pixels".into(), glb(&j, &big), "images of more pixels together than a glb has"));
+    // one big index accessor (4M, of bytes) used by three primitives: 4 MB asking for 50 MB of indices, and a
+    // thousand primitives would ask for 16 GB
+    let (mut big, mut j) = (bin.clone(), json.clone());
+    j["bufferViews"].as_array_mut().unwrap().push(serde_json::json!({"buffer": 0, "byteOffset": big.len(), "byteLength": 1 << 22}));
+    big.resize(big.len() + (1 << 22), 0);
+    j["buffers"][0]["byteLength"] = big.len().into();
+    j["accessors"].as_array_mut().unwrap().push(serde_json::json!({"bufferView": 9, "componentType": 5121, "count": 1 << 22, "type": "SCALAR"}));
+    let mut prim = j["meshes"][0]["primitives"][0].clone();
+    prim["indices"] = 8.into();
+    j["meshes"][0]["primitives"] = vec![prim; 3].into();
+    bad.push(("reused_accessor".into(), glb(&j, &big), "more to read than a glb has"));
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/bad");
     for f in std::fs::read_dir(dir).unwrap().flatten() {
         bad.push((format!("{:?}", f.path()), std::fs::read(f.path()).unwrap(), ""));

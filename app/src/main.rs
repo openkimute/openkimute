@@ -545,11 +545,13 @@ impl App {
         // Ball fall through the air table
         game.ko_collapse = !matches!(setup.as_ref().map(|s| s.mode), Some(Mode::Practice | Mode::Watch | Mode::Ball));
         game.fight.ko_collapse = game.ko_collapse;
-        // testing: `--round-time SECONDS`, `--rounds N`
-        if let Some(t) = self.round_time {
+        // testing: `--round-time SECONDS`, `--rounds N` (not in an online room: each computer has its own command
+        // line, and the match must be the same match on all)
+        let testing = self.room.is_none();
+        if let Some(t) = self.round_time.filter(|_| testing) {
             game.round_frames = t * 60;
         }
-        let mut rounds = self.rounds.unwrap_or(rounds);
+        let mut rounds = self.rounds.filter(|_| testing).unwrap_or(rounds);
         // a replay: the match as it was recorded (its parameters, not the mode's now), the camera counters as then
         let replaying = self.replay_next.as_ref().and_then(|n| match &n.0.file.game {
             replay::Match::Fight { params, .. } => Some(*params),
@@ -1071,6 +1073,10 @@ impl App {
 
     /// One fixed 60 Hz logic step.
     fn step(&mut self) {
+        // a save that failed (a full disk, the browser's storage full): the player is told, once each time
+        if let Some(why) = save::take_failure() {
+            self.debug.say(why);
+        }
         // a fight whose files were still arriving: started once all are here
         if let Some(w) = self.waiting.take() {
             match w {
@@ -1435,8 +1441,8 @@ impl App {
             // the match is over (a player left, the connection was lost, ...): why, for 3 seconds, then the room saying
             // so
             if net.gone.is_some_and(|g| g >= 180) {
-                if self.room.is_some() {
-                    let why = net.status.clone();
+                if let Some(room) = self.room.as_ref() {
+                    let why = room.why_over(&net.status);
                     self.online_room(Some(why));
                 } else {
                     self.net = None;
@@ -2031,6 +2037,11 @@ impl App {
                     return;
                 }
                 room::RoomEvent::Members => {
+                    // the room's mode cursor back to the top on every computer (the host's list and the keys come in
+                    // one order): one seated just now starts there, so every room screen moves alike
+                    if let Some(Screen::Room(rs)) = self.screen.as_mut() {
+                        rs.cursor = 0;
+                    }
                     // a player of the match on left: the match ends, back to the room
                     let players = room.players();
                     if let Some(n) = self.net.as_ref() {
@@ -2145,11 +2156,17 @@ impl App {
         self.net_start = [false; 2];
         kumite_game::bout::reset_camera_counters();
         room.link.borrow_mut().seats = room.members.iter().map(|m| m.token).collect();
-        log::info!("online: match {session} ({} players), seed {seed}", room.players());
+        let players = room.players();
+        log::info!("online: match {session} ({players} players), seed {seed}");
         self.seed = seed;
         self.screen = None;
+        // (a seat or slot given to a player the room no longer has, or never had: the CPU's, alike everywhere)
+        let here = |p: Option<usize>| p.filter(|&p| p < players);
         match setup {
             room::MatchSetup::Fight(mut setup) => {
+                if let Some(d) = setup.partners.as_mut() {
+                    d.seats = d.seats.map(here);
+                }
                 // BALL: a side nobody plays is the CPU's, the same pick on every computer (from the seed)
                 if setup.mode == Mode::Ball {
                     let n = self.roster.characters.len().max(1);
@@ -2165,8 +2182,16 @@ impl App {
                 }
                 self.load_fight(setup, Vec::new());
             }
-            room::MatchSetup::Tag(setup) if setup.mode == tagrun::TagMode::Force => self.start_room_force(&setup),
-            room::MatchSetup::Tag(setup) => self.start_tag(setup),
+            room::MatchSetup::Tag(mut setup) => {
+                for s in &mut setup.slots {
+                    s.player = here(s.player);
+                }
+                if setup.mode == tagrun::TagMode::Force {
+                    self.start_room_force(&setup);
+                } else {
+                    self.start_tag(setup);
+                }
+            }
         }
         // (the match did not load: the room is left, no session for it)
         self.open_room_session();
@@ -3540,6 +3565,13 @@ impl App {
             .collect();
         if let (Mode::Force, Some(data)) = (setup.mode, self.force_data.as_ref()) {
             records.extend((0..4).filter_map(|k| self.roster.by_selection.get(&(data.soldier_selection_base + k))).map(|s| s.1));
+            // the stage's bosses for up to four players (they load in the middle of the stage, online inside the
+            // rollback step: a browser must have them by then)
+            if let Some(run) = self.force.as_ref().filter(|r| r.extra.is_none()) {
+                let first = data.boss(run.selection, run.player_char, run.index.min(data.final_index()));
+                let model_of = |(c, k): (usize, usize)| self.roster.by_id(c).and_then(|r| r.costumes.get(k.min(r.costumes.len().saturating_sub(1))).copied());
+                records.extend(force_boss_picks(data, &ForceCtx::of(run), first, 4).into_iter().filter_map(model_of));
+            }
         }
         for &(c, costume) in setup.partners.iter().flat_map(|d| d.partners.iter()).filter(|p| p.0 < self.roster.characters.len()) {
             let ch = &self.roster.characters[c];
@@ -3662,7 +3694,7 @@ impl App {
                 let requests = net.tick(&locals[..net.local.len().min(2)]);
                 let (advanced, fresh) = netplay::apply(net, &mut t.game, requests, &mut |g, all| g.step(slots.map(|s| s.player.and_then(|p| all.get(p).copied()).unwrap_or_default())));
                 if net.gone.is_some_and(|g| g >= 180) {
-                    let why = net.status.clone();
+                    let why = self.room.as_ref().map_or_else(|| net.status.clone(), |r| r.why_over(&net.status));
                     self.online_room(Some(why));
                     return;
                 }
@@ -4772,6 +4804,18 @@ impl ForceCtx {
     }
 }
 
+/// A Force stage's bosses for `players` (`first`, the stage's own; more players: a boss each, the next stages'
+/// bosses beside it, none twice); for fewer players, the first of those for more.
+fn force_boss_picks(data: &kumite_game::force::ForceData, ctx: &ForceCtx, first: (usize, usize), players: usize) -> Vec<(usize, usize)> {
+    let mut picks = vec![first];
+    for j in 1..players {
+        let (c, k) = data.boss(ctx.selection, ctx.player_char, (ctx.index + j) % data.final_index().max(1));
+        let k = if picks.contains(&(c, k)) { k + 1 } else { k };
+        picks.push((c, k));
+    }
+    picks
+}
+
 /// A character's actor, loaded once (Force's bosses: a rollback runs a frame again, the load comes from here).
 fn cached_actor(assets: &Assets, cache: &std::cell::RefCell<HashMap<usize, kumite_game::Actor>>, model: usize) -> Option<kumite_game::Actor> {
     if let Some(a) = cache.borrow().get(&model) {
@@ -4811,13 +4855,7 @@ fn force_sim(
                 ForceEvent::Swapped => bout.swap_cpus(),
                 ForceEvent::LoadBoss(ch, cos) => {
                     // more players (OpenKumite's own): a boss each, the next stages' bosses beside this one's
-                    let players = bout.game.players().len();
-                    let mut picks = vec![(ch, cos)];
-                    for j in 1..players {
-                        let (c2, k2) = st.data.boss(ctx.selection, ctx.player_char, (ctx.index + j) % st.data.final_index().max(1));
-                        let k2 = if picks.contains(&(c2, k2)) { k2 + 1 } else { k2 };
-                        picks.push((c2, k2));
-                    }
+                    let picks = force_boss_picks(&st.data, ctx, (ch, cos), bout.game.players().len());
                     let actors: Vec<kumite_game::Actor> = picks.iter().filter_map(|&(c, k)| cached_actor(assets, cache, model_of(c, k)?)).collect();
                     if actors.len() == picks.len() {
                         if actors.len() == 1 {
@@ -4834,6 +4872,8 @@ fn force_sim(
                 }
                 // an extra stage: bosses drawn from its pool (the roster's, none twice, never the player's model),
                 // by the stage's own random numbers
+                // shortcut: not known ahead, so not fetched ahead (`fight_files`): in a browser, online, the first
+                // load of each is a read inside the rollback step; extra stages come from players' own data
                 ForceEvent::LoadBosses { pool, n } => {
                     let n = n.max(bout.game.players().len());
                     let mut pool: Vec<usize> = pool.iter().copied().filter(|&c| roster.by_id(c).is_some()).collect();

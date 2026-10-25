@@ -246,7 +246,7 @@ pub const GGRS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(360
 pub const QUIET_FRAMES: u32 = 90;
 
 /// The peers gone quiet, and for how many frames: the match's own disconnection timeout ([`GGRS_TIMEOUT`]).
-pub struct Quiet<A> {
+struct Quiet<A> {
     quiet: Vec<(A, u32)>,
 }
 
@@ -282,6 +282,8 @@ pub const STALL_FRAMES: u32 = 300;
 /// Frames a match may stay connecting once every computer has loaded it (ggrs has no timeout of its own there: a
 /// peer that never answers would hold the others on CONNECTING for good): 10 s.
 pub const CONNECT_FRAMES: u32 = 600;
+/// What [`Watch::over`] says of a match that never connected.
+pub const COULD_NOT_CONNECT: &str = "COULD NOT CONNECT";
 /// Frames a match may wait for the other computers to load it (a browser downloads its models: tens of MB): 10
 /// minutes.
 pub const LOAD_FRAMES: u32 = 36_000;
@@ -333,7 +335,7 @@ impl<A: PartialEq + Clone> Watch<A> {
         }
         if s.current_state() != ggrs::SessionState::Running {
             self.connecting += 1;
-            return (self.connecting >= CONNECT_FRAMES).then_some("COULD NOT CONNECT");
+            return (self.connecting >= CONNECT_FRAMES).then_some(COULD_NOT_CONNECT);
         }
         if self.quiet.frame() {
             return Some("CONNECTION LOST");

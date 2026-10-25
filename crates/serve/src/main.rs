@@ -53,6 +53,9 @@ fn run() -> Result<()> {
 }
 
 fn handle(mut conn: TcpStream, dir: &Path, verbose: bool) -> std::io::Result<()> {
+    // (a client that says nothing, or reads nothing, lets go of its thread: it cannot hold one each for good)
+    conn.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    conn.set_write_timeout(Some(std::time::Duration::from_secs(60)))?;
     // (the request's head up to 8 KiB: a client cannot grow it without end)
     let mut reader = BufReader::new(conn.try_clone()?.take(8192));
     let mut line = String::new();

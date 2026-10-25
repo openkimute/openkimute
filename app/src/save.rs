@@ -201,7 +201,7 @@ fn load_text() -> Option<Records> {
     // (one there that does not read as text at all: not UTF-8, no permission)
     let broken = broken || (main.is_none() && present(FILE));
     if broken && !read_only() && !keep_aside(main.as_deref().unwrap_or_default()) {
-        log::warn!("{FILE} could not be kept aside: this run saves nothing");
+        failed("The save does not read and could not be kept aside: nothing is saved this time".into());
         set_read_only();
     }
     records
@@ -247,6 +247,20 @@ pub fn set_read_only() {
 
 fn read_only() -> bool {
     READ_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The last save that failed, not yet told the player.
+static FAILED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// A save failed: logged, and kept for the player ([`take_failure`]).
+fn failed(why: String) {
+    log::warn!("{why}");
+    *FAILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(why);
+}
+
+/// A save that failed since the last call: what to tell the player (records, unlocks and options not kept).
+pub fn take_failure() -> Option<String> {
+    FAILED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
 }
 
 /// The folder of the save: `OPENKUMITE_SAVE_DIR`, else the system's folder for application data.
@@ -334,6 +348,7 @@ fn write(text: &str) {
     }
     if let Err(e) = std::fs::create_dir_all(save_dir()).and_then(|_| write_atomic(&at(FILE), text.as_bytes())) {
         log::warn!("saving {}: {e}", at(FILE).display());
+        failed(format!("The game could not be saved: {e}"));
     }
 }
 
@@ -398,12 +413,16 @@ fn write(text: &str) {
     if read_only() {
         return;
     }
-    let Some(s) = storage() else { return };
+    let Some(s) = storage() else {
+        failed("The game could not be saved: this browser keeps no storage for the page".into());
+        return;
+    };
     if let Some(old) = s.get_item(FILE).ok().flatten().filter(|o| serde_json::from_str::<Records>(o).is_ok()) {
         let _ = s.set_item(BACKUP, &old);
     }
-    if let Err(e) = s.set_item(FILE, text) {
-        log::warn!("saving {FILE}: {e:?}");
+    // (the page's storage is shared with the replays: full, some of them go)
+    if s.set_item(FILE, text).is_err() {
+        failed("The game could not be saved: the browser's storage for this page is full (delete some replays)".into());
     }
 }
 

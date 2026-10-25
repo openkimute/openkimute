@@ -34,6 +34,11 @@ impl Reliable {
         self.early.len()
     }
 
+    /// How many sent are still unacknowledged.
+    pub fn unacked(&self) -> usize {
+        self.out.len()
+    }
+
     /// Whether something sent is still unacknowledged.
     pub fn pending(&self) -> bool {
         !self.out.is_empty()

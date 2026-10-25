@@ -46,6 +46,10 @@ impl Assets {
     }
     /// A character glb by file name (`characters/<file>`: the attract embu's own meshes).
     pub fn character_file(&self, file: &str) -> Result<Character> {
+        // (a plain file name only: one with a folder or a root in it would read outside `characters/`)
+        if std::path::Path::new(file).file_name() != Some(file.as_ref()) {
+            bail!("a character file that is not a plain file name: {file:?}");
+        }
         Character::load(&self.root.join("characters").join(file))
     }
     pub fn stage(&self, id: usize) -> Result<Stage> {
@@ -586,6 +590,23 @@ fn import_glb(bytes: &[u8]) -> Result<(gltf::Document, Vec<gltf::buffer::Data>, 
             bail!("an accessor outside its view");
         }
     }
+    // what reading it takes: a mesh as often as nodes place it, a sampler's output as often as channels use it (a small
+    // file using one accessor again and again would otherwise ask for many times its size)
+    let count = |i: usize| json.accessors.get(i).map_or(0, |a| a.count.0 as usize);
+    let mut uses = vec![0usize; json.meshes.len()];
+    for m in json.nodes.iter().filter_map(|n| n.mesh.as_ref()) {
+        if let Some(u) = uses.get_mut(m.value()) {
+            *u += 1;
+        }
+    }
+    let meshes = json.meshes.iter().zip(&uses).map(|(m, &u)| {
+        let size = m.primitives.iter().map(|p| p.attributes.values().map(|a| count(a.value())).sum::<usize>() + p.indices.as_ref().map_or(0, |i| count(i.value()))).sum::<usize>();
+        size.saturating_mul(u.max(1))
+    });
+    let clips = json.animations.iter().flat_map(|a| a.channels.iter().filter_map(|c| a.samplers.get(c.sampler.value()))).map(|s| count(s.output.value()));
+    if meshes.chain(clips).fold(0usize, usize::saturating_add) > MAX_READ {
+        bail!("more to read than a glb has");
+    }
     // each accessor of the kind gltf's readers take for its use (another is an `unreachable!` in them)
     {
         use gltf::json::accessor::{ComponentType as C, Type as T};
@@ -664,6 +685,8 @@ fn import_glb(bytes: &[u8]) -> Result<(gltf::Document, Vec<gltf::buffer::Data>, 
 const MAX_TEXTURE: u32 = 4096;
 const MAX_PIXELS: u64 = 1 << 24;
 const MAX_ELEMENTS: usize = 1 << 22;
+/// The elements a glb's meshes and clips read at most, all told (the converter's largest: about 2.4 million).
+const MAX_READ: usize = 2 * MAX_ELEMENTS;
 
 /// A PNG's width and height (its header's IHDR).
 fn png_size(b: &[u8]) -> Option<(u32, u32)> {

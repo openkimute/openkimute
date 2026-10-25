@@ -658,11 +658,19 @@
     face('Checking space', '');
     const done = (m) => { storing = false; idle(); message(m); };
     const need = files.reduce((a, [, f]) => a + f.size, 0);
-    const old = (await stored())?.size ?? 0;
-    const room = async () => { const { quota = 0, usage = 0 } = await navigator.storage.estimate(); return quota - usage + old; };
+    // the copy kept now, whole or cut off (a tab closed mid-copy leaves a pack without its index), and one staged and
+    // cut off: the worker writes over or removes them, their room is the new one's
+    const size = async (name) => { try { return (await (await (await root()).getFileHandle(name)).getFile()).size; } catch { return 0; } };
+    const old = (await size('assets.pack')) + (await size('assets.idx'));
+    const stale = (await size('assets.pack.new')) + (await size('assets.idx.new'));
+    const free = async () => { const { quota = 0, usage = 0 } = await navigator.storage.estimate(); return quota - usage + stale; };
+    const room = async () => (await free()) + old;
     // (a site's storage grows when the browser keeps it: asked again after its answer)
     if ((await room()) < need) await persisted;
     if ((await room()) < need) return done(`Not enough space: the game needs ${gb(need)} GB and this browser has ${gb(await room())} GB free for this site. Free some disk space, then try again.`);
+    // room for both: the new copy beside the one kept, which stays should this one stop; else over it, said first
+    const staged = old > 0 && typeof FileSystemHandle !== 'undefined' && 'move' in FileSystemHandle.prototype && (await free()) >= need;
+    if (old > 0 && !staged) message('There isn’t room for two copies, so the game data kept now is replaced as this copy goes.');
     const show = (got) => {
       face(`${gb(got)} GB`, `of ${gb(need)} GB copied`);
       $('arc').style.strokeDashoffset = 1 - got / need;
@@ -672,12 +680,12 @@
       worker.onmessage = ({ data }) => (data.progress === undefined ? ok(data) : show(data.progress));
       worker.onerror = (e) => ok({ error: e.message });
       show(0);
-      worker.postMessage({ files });
+      worker.postMessage({ files, staged });
     });
     worker.terminate();
     if (result.error) {
       return done(result.quota ? `Not enough space for the game (${gb(need)} GB). Free some disk space, then try again.`
-        : `The copy stopped: ${result.error}. Nothing was kept; try again.`);
+        : `The copy stopped: ${result.error}. ${staged ? 'The game data kept before is still here' : 'Nothing was kept'}; try again.`);
     }
     console.info(`kept ${files.length} files, ${gb(result.done)} GB`);
     show(need);

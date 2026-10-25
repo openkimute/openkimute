@@ -11,9 +11,7 @@
 use crate::netplay::NetAddr;
 use std::cell::RefCell;
 use std::rc::Rc;
-use web_time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use web_time::Instant;
+use web_time::{Duration, Instant};
 
 pub use kumite_net::{LobbyMsg, Member, Token};
 #[cfg(not(target_arch = "wasm32"))]
@@ -50,17 +48,6 @@ pub fn key_of(c: u8) -> Option<crate::menu::Key> {
 /// This game build's fingerprint (build.rs: the sources and dependencies of everything a match runs): two computers
 /// of different builds would desync, so they refuse each other at the hello.
 pub const BUILD: &str = env!("OPENKUMITE_BUILD");
-
-/// A hello's fields.
-struct Hello {
-    version: u32,
-    name: String,
-    locals: u8,
-    token: Token,
-    host: bool,
-    assets: String,
-    build: String,
-}
 
 /// One UDP peer's reliable channel ([`kumite_net::reliable`]), when its lobby packet was last sent, when it was last heard.
 #[cfg(not(target_arch = "wasm32"))]
@@ -133,6 +120,9 @@ pub struct Link {
     ggrs_in: std::collections::VecDeque<(Token, Vec<u8>)>,
     /// Peers gone since the last [`Link::take_gone`].
     gone: Vec<Token>,
+    /// Peers told they cannot join ([`Link::refuse_peer`]), and since when: forgotten once told (UDP: the message
+    /// acknowledged, or [`REFUSED_FOR`] past), told nothing else meanwhile.
+    refused: Vec<(Token, Instant)>,
     /// The seats of the match (index = seat): their tokens, for the rollback session's addresses.
     pub seats: Vec<Token>,
     /// The room's version (a peer of another is refused).
@@ -154,6 +144,15 @@ const MAX_GGRS_PACKET: usize = 8 * 1024;
 
 /// The rollback packets kept for a session at most (a frame's few a peer; outside a match nobody takes them).
 const MAX_GGRS_IN: usize = 512;
+
+/// A UDP peer refused stays this long at most (its refusal unacknowledged) before it is forgotten.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const REFUSED_FOR: Duration = Duration::from_secs(2);
+
+/// A UDP peer with this many room messages unacknowledged counts as gone (an honest one acknowledges each within a
+/// second; one that never does would hold them all).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const MAX_UNACKED: usize = 4096;
 
 /// How long a UDP peer may stay silent before it counts as gone.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -195,6 +194,7 @@ impl Link {
             inbox: Vec::new(),
             ggrs_in: Default::default(),
             gone: Vec::new(),
+            refused: Vec::new(),
             seats: Vec::new(),
             version,
             failed: None,
@@ -217,6 +217,12 @@ impl Link {
         LobbyMsg::Hello { version: self.version, name: self.name.clone(), locals: self.locals, token: self.token, host: self.host, assets: self.assets.clone(), build: BUILD.to_string() }
     }
 
+    /// Whether a match's packets reach `token` (this one; WebRTC: a link of its own to it; UDP: guests through the
+    /// host).
+    pub fn reaches(&self, token: Token) -> bool {
+        token == self.token || self.peers.route_of(token).is_some()
+    }
+
     /// The host met (a guest), its token.
     pub fn host_token(&self) -> Option<Token> {
         self.peers.host()
@@ -224,7 +230,8 @@ impl Link {
 
     /// Send a room message to a peer (`None`: to every peer met).
     pub fn send(&mut self, to: Option<Token>, msg: LobbyMsg) {
-        let targets: Vec<Route> = self.peers.iter().filter(|p| to.is_none_or(|t| t == p.token)).map(|p| p.route).collect();
+        let refused = |t: Token| self.refused.iter().any(|r| r.0 == t);
+        let targets: Vec<Route> = self.peers.iter().filter(|p| to.map_or(!refused(p.token), |t| t == p.token)).map(|p| p.route).collect();
         for route in targets {
             self.send_route(route, &msg);
         }
@@ -253,16 +260,16 @@ impl Link {
     /// A peer said hello: known from now on, unless it cannot play with this one (another version, game build or
     /// game files: said only of the host, the room this one cannot join; another peer is just not met) or would take
     /// another's place ([`kumite_net::peers`]).
-    fn met(&mut self, route: Route, hello: Hello) {
-        let Hello { version, name, locals, token, host, assets, build } = hello;
+    fn met(&mut self, route: Route, hello: LobbyMsg) {
+        let LobbyMsg::Hello { version, ref name, locals, token, host, ref assets, ref build } = hello else { return };
         if token == self.token {
             return;
         }
         let differs = if version != self.version {
             Some("THE OTHER PLAYER HAS ANOTHER VERSION")
-        } else if build != BUILD {
+        } else if build.as_str() != BUILD {
             Some("ANOTHER GAME BUILD: UPDATE OR RELOAD THE GAME")
-        } else if assets != self.assets {
+        } else if *assets != self.assets {
             Some("THE OTHER PLAYER'S GAME FILES DIFFER")
         } else {
             None
@@ -280,12 +287,15 @@ impl Link {
             log::warn!("room: {name} says it hosts too: not met");
             return;
         }
+        // shortcut: a WebRTC room's host is whoever says so first to a newcomer (the signalling server names no
+        // creator): a peer there before the host's hello can run the newcomer's room; its setups are still checked
+        // (`MatchSetup::valid`), so it can spoil a room, not crash a game
         match self.peers.meet(route, token, name.clone(), locals, host) {
             Ok(new) => {
                 if new {
                     log::info!("room: met {name} ({locals} playing){}", if host { ", the host" } else { "" });
                 }
-                self.inbox.push((token, LobbyMsg::Hello { version, name, locals, token, host, assets, build }));
+                self.inbox.push((token, hello));
             }
             Err(why) => {
                 log::warn!("room: a hello from {name} not taken: {why:?}");
@@ -322,6 +332,30 @@ impl Link {
     }
 
     /// Drop a peer (it left, or the host let it go).
+    /// Tell a peer it cannot join (the room full, a match on), and forget it once told: it hears nothing else of the
+    /// room, and its rollback packets are not taken.
+    pub fn refuse_peer(&mut self, token: Token, why: &str) {
+        self.send(Some(token), LobbyMsg::Refused(why.into()));
+        if !self.refused.iter().any(|r| r.0 == token) {
+            self.refused.push((token, Instant::now()));
+        }
+        self.forget_refused();
+    }
+
+    /// The refused peers told (WebRTC: at once; UDP: acknowledged, or long enough ago), forgotten.
+    fn forget_refused(&mut self) {
+        let told = |l: &Self, refused: (Token, Instant)| match l.peers.route_of(refused.0) {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(Route::Udp(addr)) => refused.1.elapsed() >= REFUSED_FOR || l.reliable.iter().find(|r| r.addr == addr).is_none_or(|r| !r.channel.pending()),
+            _ => true,
+        };
+        let done: Vec<Token> = self.refused.iter().copied().filter(|&r| told(self, r)).map(|r| r.0).collect();
+        for &t in &done {
+            self.forget(t);
+        }
+        self.refused.retain(|r| !done.contains(&r.0));
+    }
+
     pub fn forget(&mut self, token: Token) {
         let route = self.peers.remove_token(token);
         #[cfg(not(target_arch = "wasm32"))]
@@ -336,6 +370,8 @@ impl Link {
     /// the UDP lobby packets sent when due.
     pub fn pump(&mut self) {
         let hello = self.hello();
+        // (rollback packets only from the matches' seats: a stranger met, or refused, has none to send)
+        let seated: Vec<Token> = self.seats.iter().chain(self.sessions.iter().flat_map(|s| s.1.iter())).copied().collect();
         // the room's messages in the order they came (a hello first makes its sender known to what follows)
         let mut received: Vec<(Route, LobbyMsg)> = Vec::new();
         let mut other_version = false;
@@ -374,7 +410,7 @@ impl Link {
                 }
                 for (from, b) in socket.channel_mut(0).receive() {
                     if let Some(t) = self.peers.token_of(Route::Rtc(from)) {
-                        Self::ggrs_got(&mut self.ggrs_in, t, &b);
+                        Self::ggrs_got(&mut self.ggrs_in, &seated, t, &b);
                     }
                 }
             }
@@ -391,6 +427,9 @@ impl Link {
                         Err(_) => continue,
                     };
                     // a guest hears only its host
+                    // shortcut: known by its address alone (no secret in its packets): one who can send from the host's
+                    // address (a forged source, on a network that lets it) speaks for the host; what it can say is still
+                    // checked (setups, members, keys), so it can spoil a room, not crash a game
                     if host.is_some_and(|h| h != from) {
                         continue;
                     }
@@ -416,8 +455,11 @@ impl Link {
                                 }
                                 continue;
                             };
+                            // (all taken: a refused peer's slot makes room, else the newcomer waits for one)
                             if known.is_none() && self.reliable.len() >= MAX_UDP_PEERS {
-                                continue;
+                                let refused = |a| self.peers.token_of(Route::Udp(a)).is_some_and(|t| self.refused.iter().any(|r| r.0 == t));
+                                let Some(k) = self.reliable.iter().position(|r| refused(r.addr)) else { continue };
+                                self.reliable.remove(k);
                             }
                             // the host answers every hello (a guest still asking: its answer got lost)
                             if host.is_none() {
@@ -432,7 +474,7 @@ impl Link {
                         }
                         Some((&TAG_GGRS, rest)) => {
                             if let Some(t) = sender {
-                                Self::ggrs_got(&mut self.ggrs_in, t, rest);
+                                Self::ggrs_got(&mut self.ggrs_in, &seated, t, rest);
                             }
                         }
                         Some((&TAG_RELAY, rest)) => {
@@ -440,7 +482,7 @@ impl Link {
                             if host.is_some() {
                                 // a guest: from its host, which said who sent it
                                 if to == self.token {
-                                    Self::ggrs_got(&mut self.ggrs_in, src, payload);
+                                    Self::ggrs_got(&mut self.ggrs_in, &seated, src, payload);
                                 }
                             } else if let Some(sender) = sender {
                                 // the host passes on a guest's packet, as from that guest whatever it says
@@ -478,7 +520,8 @@ impl Link {
                     }
                 }
                 // silent too long: gone
-                let silent: Vec<std::net::SocketAddr> = self.reliable.iter().filter(|r| r.heard.elapsed() > SILENCE).map(|r| r.addr).collect();
+                // (or never acknowledging: what it is sent would only pile up)
+                let silent: Vec<std::net::SocketAddr> = self.reliable.iter().filter(|r| r.heard.elapsed() > SILENCE || r.channel.unacked() > MAX_UNACKED).map(|r| r.addr).collect();
                 for addr in silent {
                     self.reliable.retain(|r| r.addr != addr);
                     if let Some(token) = self.peers.remove_route(Route::Udp(addr)) {
@@ -493,7 +536,7 @@ impl Link {
         }
         for (route, m) in received {
             match m {
-                LobbyMsg::Hello { version, name, locals, token, host, assets, build } => self.met(route, Hello { version, name, locals, token, host, assets, build }),
+                LobbyMsg::Hello { .. } => self.met(route, m),
                 m => {
                     if let Some(t) = self.peers.token_of(route) {
                         if let LobbyMsg::Room { members, .. } = &m {
@@ -504,6 +547,13 @@ impl Link {
                 }
             }
         }
+        // (a UDP slot is made for each hello that reads: one not met, another version's or a token taken, goes)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let peers = &self.peers;
+            self.reliable.retain(|r| peers.token_of(Route::Udp(r.addr)).is_some());
+        }
+        self.forget_refused();
     }
 
     /// A UDP guest asks the host for its hello (twice a second until answered).
@@ -617,9 +667,10 @@ impl Link {
     }
 
     /// A rollback packet received: kept for the session (at most [`MAX_GGRS_IN`]: none takes them outside a match).
-    fn ggrs_got(ggrs_in: &mut std::collections::VecDeque<(Token, Vec<u8>)>, from: Token, b: &[u8]) {
-        // (an honest one is under 2 KB, a hundred frames unacknowledged: a big one is junk, not memory to hold)
-        if b.len() > MAX_GGRS_PACKET {
+    fn ggrs_got(ggrs_in: &mut std::collections::VecDeque<(Token, Vec<u8>)>, seated: &[Token], from: Token, b: &[u8]) {
+        // (an honest one is under 2 KB, a hundred frames unacknowledged: a big one is junk, not memory to hold; and
+        // one from outside the matches would push the seats' own out)
+        if b.len() > MAX_GGRS_PACKET || !seated.contains(&from) {
             return;
         }
         if ggrs_in.len() >= MAX_GGRS_IN {
@@ -631,7 +682,14 @@ impl Link {
     /// Tests: a rollback packet received from `from`; the packets queued; none queued.
     #[cfg(test)]
     pub fn test_got(&mut self, from: Token, b: &[u8]) {
-        Self::ggrs_got(&mut self.ggrs_in, from, b);
+        let seated: Vec<Token> = self.seats.iter().chain(self.sessions.iter().flat_map(|s| s.1.iter())).copied().collect();
+        Self::ggrs_got(&mut self.ggrs_in, &seated, from, b);
+    }
+    /// Tests: the peers met, and the UDP slots held.
+    #[cfg(test)]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn test_peers(&self) -> (usize, usize) {
+        (self.peers.iter().count(), self.reliable.len())
     }
     #[cfg(test)]
     pub fn test_queued(&self) -> usize {

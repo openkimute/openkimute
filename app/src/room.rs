@@ -228,6 +228,24 @@ impl Room {
         self.members.iter().map(|m| m.locals as usize).sum()
     }
 
+    /// The members this computer has no link to (WebRTC: two networks that do not let their computers meet, or not
+    /// yet): a match with them cannot connect.
+    pub fn unreachable(&self) -> Vec<String> {
+        let link = self.link.borrow();
+        self.members.iter().filter(|m| !link.reaches(m.token)).map(|m| m.name.clone()).collect()
+    }
+
+    /// Why a match ended, as the room tells it: the session's reason, or who this computer never reached when that is
+    /// why.
+    pub fn why_over(&self, status: &str) -> String {
+        let cut = self.unreachable();
+        if status == kumite_net::COULD_NOT_CONNECT && !cut.is_empty() {
+            format!("COULD NOT REACH {}", cut.join(", "))
+        } else {
+            status.to_string()
+        }
+    }
+
     /// The players of seat `s` (their numbers in the room: P1 = 0).
     pub fn players_of(&self, s: usize) -> std::ops::Range<usize> {
         let start: usize = self.members.iter().take(s).map(|m| m.locals as usize).sum();
@@ -385,7 +403,7 @@ impl Room {
                     let name: String = name.chars().filter(|c| !c.is_control()).take(MAX_NAME).collect();
                     if !self.open || self.players() + locals as usize > MAX_PLAYERS {
                         let why = if self.open { "THE ROOM IS FULL" } else { "A MATCH IS ON" };
-                        self.link.borrow_mut().send(Some(token), LobbyMsg::Refused(why.into()));
+                        self.link.borrow_mut().refuse_peer(token, why);
                         continue;
                     }
                     self.members.push(Member { token, name, locals });
@@ -563,7 +581,9 @@ impl RoomScreen {
 
     /// Take in the room as it is now.
     pub fn update(&mut self, room: &Room) {
-        self.lines = (0..room.members.len()).map(|s| (room.members[s].name.clone(), room.players_of(s).map(|p| format!("{}P", p + 1)).collect::<Vec<_>>().join(" "), Some(s) == room.seat())).collect();
+        let cut = room.unreachable();
+        let name = |m: &Member| if cut.contains(&m.name) { format!("{} - NO LINK YET", m.name) } else { m.name.clone() };
+        self.lines = (0..room.members.len()).map(|s| (name(&room.members[s]), room.players_of(s).map(|p| format!("{}P", p + 1)).collect::<Vec<_>>().join(" "), Some(s) == room.seat())).collect();
         self.status = room.status.clone();
         self.host = room.host();
         self.players = room.players();
@@ -810,6 +830,9 @@ mod udp_tests {
         let mut events = vec![Vec::new(); 3];
         run(&mut rooms, &mut events, |r, _| r[0].members.len() == 3 && r.iter().all(|r| r.seat().is_some() && r.members.len() == 3));
         assert_eq!(rooms[2].seed, 7);
+        // (guests reach each other through the host: nobody shows as out of reach)
+        assert!(rooms.iter().all(|r| r.unreachable().is_empty()));
+        assert_eq!(rooms[1].why_over(kumite_net::COULD_NOT_CONNECT), kumite_net::COULD_NOT_CONNECT);
         // a burst of keys from the second guest: every computer gets them all, in the same order
         let mut out = Vec::new();
         for k in 0..200 {
@@ -862,6 +885,9 @@ mod udp_tests {
             assert_eq!(link.borrow().test_queued(), kept as usize, "{} bytes of match {}", b.len(), u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
             link.borrow_mut().test_clear();
         }
+        // from a peer met but in no match (a stranger, one refused): not kept, it would push the seats' own out
+        link.borrow_mut().test_got(0x55, &packet(12, 10));
+        assert_eq!(link.borrow().test_queued(), 0, "a stranger's rollback packet");
         // a finished match's last Input, lost, is sent again (the session opened with its seats)
         let mut input = 11u32.to_le_bytes().to_vec();
         input.extend([0x34, 0x12, 2, 0, 0, 0]);
@@ -911,6 +937,36 @@ mod udp_tests {
         rooms[0].key(0, Key::Up, &mut out);
         run(&mut rooms, &mut events, |_, e| keys(&e[1]).len() == 1);
         assert_eq!(keys(&events[1]), [(0, Key::Up)]);
+    }
+
+    /// A full room tells a newcomer so and forgets it (no room messages, no slot); hellos that are not met keep no
+    /// slot either.
+    #[test]
+    fn a_full_room_refuses_a_newcomer_and_forgets_it() {
+        let port = free_port();
+        let mut rooms = vec![Room::new(crate::direct::host(port, "HOST", 2).unwrap(), 7), Room::new(crate::direct::join(&format!("127.0.0.1:{port}"), "TWO", 2).unwrap(), 0)];
+        let mut events = vec![Vec::new(); 3];
+        run(&mut rooms, &mut events, |r, _| r[1].seat().is_some());
+        rooms.push(Room::new(crate::direct::join(&format!("127.0.0.1:{port}"), "LATE", 1).unwrap(), 0));
+        run(&mut rooms, &mut events, |_, e| e[2].iter().any(|e| matches!(e, RoomEvent::Left(w) if w == "THE ROOM IS FULL")));
+        // (the refusal acknowledged: forgotten; LATE has given up asking by then)
+        rooms.truncate(2);
+        run(&mut rooms, &mut events, |r, _| r[0].link.borrow().test_peers() == (1, 1));
+        assert_eq!(rooms[0].members.len(), 2);
+        // hellos that read but are not met (another version; another build, an even token) take no slot
+        let stranger = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        for (version, token) in [(0, 3), (kumite_net::PROTOCOL, 2)] {
+            let hello = format!("\0{{\"Hello\":{{\"version\":{version},\"name\":\"X\",\"locals\":1,\"token\":{token},\"host\":false,\"assets\":\"\",\"build\":\"\"}}}}");
+            stranger.send_to(hello.as_bytes(), ("127.0.0.1", port)).unwrap();
+        }
+        let start = std::time::Instant::now();
+        while start.elapsed().as_millis() < 200 {
+            for (r, e) in rooms.iter_mut().zip(events.iter_mut()) {
+                e.extend(r.poll());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(rooms[0].link.borrow().test_peers(), (1, 1));
     }
 
     /// Anyone's datagram saying it hosts another version does not end a host's room.
