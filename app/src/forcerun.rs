@@ -10,6 +10,7 @@ use kumite_game::force::{ForceData, ForceStage};
 use std::sync::Arc;
 
 /// The run: the player, the stage reached, what carries over.
+#[derive(Clone)]
 pub struct ForceRun {
     pub data: Arc<ForceData>,
     /// Roster index and costume; the game's selection (char * 4 + costume) and character id.
@@ -49,7 +50,61 @@ pub struct ForceRun {
     pub more_players: [Option<(usize, usize, usize)>; 2],
 }
 
+/// A run as a stage of it begins (a replay of the stage starts from it): what the stage is made from.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ForceStart {
+    pub player: (usize, usize),
+    pub selection: usize,
+    pub player_char: usize,
+    pub difficulty: usize,
+    pub player_costume: usize,
+    pub index: usize,
+    pub extra: Option<usize>,
+    pub pending_final: bool,
+    pub score: u32,
+    pub hiscore: u32,
+    pub keys: u32,
+    pub flags: u32,
+    pub kills: u32,
+    pub clock: u32,
+    pub partner: Option<(usize, usize)>,
+    pub partner_costume: usize,
+    pub more_players: [Option<(usize, usize, usize)>; 2],
+}
+
 impl ForceRun {
+    /// The run as the stage about to load begins.
+    pub fn start(&self) -> ForceStart {
+        ForceStart {
+            player: self.player,
+            selection: self.selection,
+            player_char: self.player_char,
+            difficulty: self.difficulty,
+            player_costume: self.player_costume,
+            index: self.index,
+            extra: self.extra,
+            pending_final: self.pending_final,
+            score: self.score,
+            hiscore: self.hiscore,
+            keys: self.keys,
+            flags: self.flags,
+            kills: self.kills,
+            clock: self.clock,
+            partner: self.partner,
+            partner_costume: self.partner_costume,
+            more_players: self.more_players,
+        }
+    }
+
+    /// A run at a stage's start (a replay of it).
+    pub fn from_start(data: Arc<ForceData>, s: &ForceStart) -> Self {
+        let mut run = Self::new(data, s.player, s.selection, s.player_char, s.difficulty, s.keys, s.hiscore, false);
+        (run.player_costume, run.index, run.extra, run.pending_final, run.score, run.flags, run.kills, run.clock) =
+            (s.player_costume, s.index, s.extra, s.pending_final, s.score, s.flags, s.kills, s.clock);
+        (run.partner, run.partner_costume, run.more_players) = (s.partner, s.partner_costume, s.more_players);
+        run
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(data: Arc<ForceData>, player: (usize, usize), selection: usize, player_char: usize, difficulty: usize, keys: u32, hiscore: u32, drb_unlocked: bool) -> Self {
         let stages = data.final_index();

@@ -131,8 +131,9 @@ Records, unlocks and settings are kept as JSON in the system's application data 
 
 ## Replays
 
-Every match of a mode with rounds (Arcade, VS, Team Battle, Time Attack, Survival, Ball and its 2 ON 2, the extra
-levels; online ones too) is recorded and saved as a replay when it ends. The game is deterministic, so a replay is
+Every match is recorded and saved as a replay when it ends: Arcade, VS, Team Battle, Time Attack, Survival, Ball and
+its 2 ON 2, the extra levels, the tag brawl (Tag Arcade too), each Force stage (players joining on the way too), online
+ones as well. Practice is not, nor a match a cheat or a debug tool changed (its inputs no longer make it). The game is deterministic, so a replay is
 the match's setup and every step's inputs: a couple of KB a match. The newest 50 are kept (15 in a browser), plus any
 marked kept. Natively they are files in `replays/` in the save folder; in a browser, the page's storage.
 
@@ -173,7 +174,7 @@ A replay plays only on the game data it was recorded on. Before it plays it is r
 seeking), and its end is checked against the state recorded: the viewer says **verified**, or that it differs; played
 to its end, it is checked again. Online, each computer saves its own replay; the last frames, past the match's end,
 may hold the other player's predicted inputs (the result is the same on both). `--replay ID|latest` plays one from the
-command line. Not recorded yet: the tag brawl and Force.
+command line.
 
 ## Releases
 

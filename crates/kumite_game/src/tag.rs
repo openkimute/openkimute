@@ -74,6 +74,11 @@ pub struct TagGame {
     intro_counter: usize,
     /// The camera's framing axis of the last frame (it never flips by more than a right angle at once).
     axis: Vec3,
+    /// The match's inputs recorded as it is played (a replay), when on: the four pads as a bout's step input's
+    /// (pads, partner, extra).
+    pub tape: Option<crate::bout::Tape>,
+    /// A replay played: its inputs, and the next step's.
+    playback: Option<(Arc<[crate::bout::StepInput]>, usize)>,
 }
 
 impl TagGame {
@@ -106,6 +111,8 @@ impl TagGame {
             rng: 0x1234_5678,
             intro_counter: 0,
             axis: Vec3::X,
+            tape: None,
+            playback: None,
         };
         g.next_round();
         Ok(g)
@@ -293,7 +300,31 @@ impl TagGame {
         h
     }
 
+    /// Play the match from these inputs (a replay): each step takes the next, whatever is passed to it.
+    pub fn play(&mut self, inputs: Arc<[crate::bout::StepInput]>) {
+        self.playback = Some((inputs, 0));
+    }
+
+    /// The steps played from a replay's inputs so far.
+    pub fn played(&self) -> usize {
+        self.playback.as_ref().map_or(0, |p| p.1)
+    }
+
+    /// This step's pads: the replay's, or `pads`, recorded on the tape.
+    fn taped(&mut self, pads: [Pad; 4]) -> [Pad; 4] {
+        if let Some((inputs, at)) = self.playback.as_mut() {
+            let s = inputs.get(*at).copied().unwrap_or_default();
+            *at += 1;
+            return [s.pads[0], s.pads[1], s.partner, s.extra.unwrap_or_default()];
+        }
+        if let Some(tape) = self.tape.as_mut() {
+            tape.push(crate::bout::StepInput { pads: [pads[0], pads[1]], partner: pads[2], extra: Some(pads[3]), more: [None; 2] });
+        }
+        pads
+    }
+
     pub fn step(&mut self, pads: [Pad; 4]) {
+        let pads = self.taped(pads);
         self.events.clear();
         self.phase_frame += 1;
         let idle = [Pad::default(); 4];

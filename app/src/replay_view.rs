@@ -2,14 +2,14 @@
 //! play / pause, speed, a step at a time, seeking on a timeline with the rounds marked, the free camera, the HUD off,
 //! each player's inputs.
 //!
-//! Seeking: before it plays, the match is run through once, quickly, from its inputs; a copy of the match is kept
-//! every [`SNAPSHOT_EVERY`] steps, the rounds' starts noted, and the end checked against the recorded state. A seek
-//! takes the copy before the step and runs on to it.
+//! Seeking: before it plays, the match is run through once, quickly, from its inputs (by the app: a Force stage's
+//! logic and its players joining with it); a copy of the match is kept every [`SNAPSHOT_EVERY`] steps, the rounds'
+//! starts noted, and the end checked against the recorded state. A seek takes the copy before the step and runs on
+//! to it.
 
 use crate::replay::{self, Entry, ReplayFile};
 use egui::{Align2, Color32, RichText};
-use kumite_game::bout::{Bout, Phase};
-use kumite_sim::input::Pad;
+use kumite_game::bout::Bout;
 
 /// Steps between the copies a seek starts from (5 seconds).
 pub const SNAPSHOT_EVERY: usize = 300;
@@ -30,15 +30,25 @@ pub enum Request {
     Exit,
 }
 
+/// The match at a step, of whichever kind (what a seek starts from).
+#[derive(Clone)]
+pub enum Snapshot {
+    Fight(Box<Bout>),
+    /// A Force stage: the fight, and the run with its stage.
+    Force(Box<Bout>, Box<crate::forcerun::ForceRun>),
+    Tag(Box<kumite_game::tag::TagGame>),
+}
+
 pub struct View {
     pub id: String,
     pub file: ReplayFile,
     /// Steps in the match.
     pub total: usize,
-    snapshots: Vec<(usize, Bout)>,
+    /// Copies of the match every [`SNAPSHOT_EVERY`] steps (the app's run-through).
+    pub snapshots: Vec<(usize, Snapshot)>,
     /// The step each round's call began at, and its number.
     pub rounds: Vec<(usize, u32)>,
-    /// The run-through ended in the recorded state (None: no state recorded).
+    /// The run-through ended in the recorded state.
     pub verified: bool,
     pub hud: bool,
     pub inputs: bool,
@@ -53,41 +63,38 @@ pub struct View {
 }
 
 impl View {
-    /// Run the match through from `start` (its first step to come, the replay's inputs set), keeping copies.
-    pub fn new(entry: Entry, start: &Bout, counters_before: [usize; 3]) -> Self {
+    /// The replay of `entry`, its run-through still to come (the app's).
+    pub fn new(entry: Entry, counters_before: [usize; 3]) -> Self {
         let total = entry.file.steps as usize;
-        let mut b = start.clone();
-        let mut snapshots = vec![(0, start.clone())];
-        let mut rounds = Vec::new();
-        let mut round = 0;
-        for step in 0..total {
-            if step > 0 && step % SNAPSHOT_EVERY == 0 {
-                snapshots.push((step, b.clone()));
-            }
-            b.step([Pad::default(); 2]);
-            if b.round != round && matches!(b.phase, Phase::Call | Phase::Fight) {
-                round = b.round;
-                rounds.push((step, round));
-            }
+        Self {
+            id: entry.id,
+            file: entry.file,
+            total,
+            snapshots: Vec::new(),
+            rounds: Vec::new(),
+            verified: false,
+            hud: true,
+            inputs: false,
+            bar: true,
+            counters_before,
+            ended: false,
+            watched_ok: None,
+            requests: Vec::new(),
         }
-        let verified = b.game.state_hash() == entry.file.hash;
-        if !verified {
-            log::warn!("replay {}: the run-through ended in another state than recorded", entry.id);
-        }
-        Self { id: entry.id, file: entry.file, total, snapshots, rounds, verified, hud: true, inputs: false, bar: true, counters_before, ended: false, watched_ok: None, requests: Vec::new() }
     }
 
     /// The copy a seek to `step` starts from.
-    pub fn snapshot_before(&self, step: usize) -> Option<&Bout> {
-        self.snapshots.iter().rev().find(|(s, _)| *s <= step).map(|(_, b)| b)
+    pub fn snapshot_before(&self, step: usize) -> Option<&(usize, Snapshot)> {
+        self.snapshots.iter().rev().find(|(s, _)| *s <= step)
     }
 
     /// The bar at the bottom: what plays, the controls, the timeline; each player's inputs at the sides.
-    pub fn ui(&mut self, ctx: &egui::Context, bout: &Bout, paused: bool, speed: f32, free_cam: bool) {
+    /// `at`: the steps played; `inputs`: each player's name and input history.
+    pub fn ui(&mut self, ctx: &egui::Context, at: usize, inputs: &[(String, &kumite_sim::input::InputState)], paused: bool, speed: f32, free_cam: bool) {
         if !self.bar {
             return;
         }
-        let at = bout.played().min(self.total);
+        let at = at.min(self.total);
         let mut req = Vec::new();
         egui::Area::new(egui::Id::new("replay_bar")).anchor(Align2::CENTER_BOTTOM, [0.0, -14.0]).show(ctx, |ui| {
             egui::Frame::new().fill(Color32::from_black_alpha(200)).corner_radius(10).inner_margin(12).stroke(egui::Stroke::new(1.0, Color32::from_white_alpha(30))).show(ui, |ui| {
@@ -193,13 +200,16 @@ impl View {
             });
         });
         if self.inputs {
-            for (i, f) in bout.game.fight.fighters.iter().enumerate().take(2) {
-                let (anchor, x) = if i == 0 { (Align2::LEFT_CENTER, 14.0) } else { (Align2::RIGHT_CENTER, -14.0) };
-                egui::Area::new(egui::Id::new(("replay_inputs", i))).anchor(anchor, [x, 0.0]).show(ctx, |ui| {
+            // (the first half on the left, the rest on the right: two players, or a tag brawl's teams)
+            let half = inputs.len().div_ceil(2);
+            for (i, (name, input)) in inputs.iter().enumerate() {
+                let (anchor, x, k) = if i < half { (Align2::LEFT_CENTER, 14.0, i) } else { (Align2::RIGHT_CENTER, -14.0, i - half) };
+                let y = (k as f32 - (half as f32 - 1.0) / 2.0) * 330.0 / half as f32;
+                egui::Area::new(egui::Id::new(("replay_inputs", i))).anchor(anchor, [x, y]).show(ctx, |ui| {
                     egui::Frame::new().fill(Color32::from_black_alpha(170)).corner_radius(8).inner_margin(8).show(ui, |ui| {
-                        ui.label(RichText::new(format!("P{}", i + 1)).strong().color(Color32::WHITE));
-                        let text = crate::debug::input_history(&f.input, 60);
-                        for line in text.split(' ').rev().take(14) {
+                        ui.label(RichText::new(name).strong().color(Color32::WHITE));
+                        let text = crate::debug::input_history(input, 60);
+                        for line in text.split(' ').rev().take(if half > 1 { 6 } else { 14 }) {
                             ui.label(RichText::new(line).monospace().color(Color32::from_gray(225)));
                         }
                     });

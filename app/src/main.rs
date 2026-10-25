@@ -105,6 +105,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
+/// A tag brawl is over for its replay this many steps into its end (`step_tag`'s wait before the next screen).
+const TAG_SAVED_AFTER: u32 = 150;
+
 /// The game logic runs at a fixed 60 steps per second (one step per NTSC field, kumite_converter's reference engine.md
 /// §2.3).
 const STEP: Duration = Duration::from_nanos(16_666_667);
@@ -236,9 +239,7 @@ fn apply_face(r: &Renderer, model: &SkinnedModel, atlas: &kumite_assets::Image, 
 
 /// What made a match being recorded as a replay (`replay.rs`).
 struct ReplayRec {
-    setup: FightSetup,
-    params: replay::MatchParams,
-    ladder: Vec<usize>,
+    game: replay::Match,
     online: bool,
 }
 
@@ -445,6 +446,11 @@ struct App {
     replay_view: Option<Box<replay_view::View>>,
     /// The camera counters before the replay about to load (put back after it).
     replay_counters_before: Option<[usize; 3]>,
+    /// A Force replay's players joining (the step before which, who), and the next one to come.
+    replay_joins: Vec<(u64, u8)>,
+    replay_join_next: usize,
+    /// The tag stage before a tag brawl's replay set its own (put back after it).
+    replay_tag_stage: Option<Option<usize>>,
     /// The replays, open over the main menu.
     replays: Option<replay_view::Browser>,
     /// Keys are the game's again from then (a system dialog closed with one).
@@ -543,7 +549,10 @@ impl App {
         }
         let mut rounds = self.rounds.unwrap_or(rounds);
         // a replay: the match as it was recorded (its parameters, not the mode's now), the camera counters as then
-        let replaying = self.replay_next.as_ref().map(|n| n.0.file.params);
+        let replaying = self.replay_next.as_ref().and_then(|n| match &n.0.file.game {
+            replay::Match::Fight { params, .. } => Some(*params),
+            _ => None,
+        });
         if let Some(p) = replaying {
             (rounds, game.round_frames, game.max_health, game.start_health) = (p.rounds, p.round_frames, p.max_health, p.start_health);
             kumite_game::bout::set_counters(p.counters);
@@ -613,7 +622,8 @@ impl App {
         if let (None, true, Some(s)) = (replaying, recordable, setup.as_ref()) {
             bout.tape = Some(Default::default());
             let params = replay::MatchParams { rounds, round_frames, max_health, start_health, cpu: [bout.cpu[0].is_some(), bout.cpu[1].is_some()], interlude_check: bout.interlude_check, counters };
-            self.replay_rec = Some(ReplayRec { setup: s.clone(), params, ladder: ladder.clone(), online: self.net.is_some() || self.room.is_some() });
+            let game = replay::Match::Fight { setup: s.clone(), params, ladder: ladder.clone() };
+            self.replay_rec = Some(ReplayRec { game, online: self.net.is_some() || self.room.is_some() });
         }
         log::info!("{:?} fight {} vs {} on stage {stage} loaded in {:.0} ms", setup.as_ref().map(|s| s.mode), names[0], names[1], t.elapsed().as_secs_f32() * 1000.0);
         let banks = models.map(|m| format!("m{m:03}"));
@@ -707,17 +717,188 @@ impl App {
             (f.partner, f.extra_voice) = (Some(voice(partners.partners[0])), Some(voice(partners.partners[1])));
             f.seats = Some(partners.seats);
         }
-        // a replay: its inputs play the match, run through once first (the seek copies, the check)
-        if let (Some(next), Some(f)) = (self.replay_next.take(), self.fight.as_mut()) {
-            let (entry, inputs) = *next;
-            let before = self.replay_counters_before.take().unwrap_or(counters);
-            f.bout.play(inputs);
-            let t = Instant::now();
-            self.replay_view = Some(Box::new(replay_view::View::new(entry, &f.bout, before)));
-            log::info!("replay run through in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
-        }
+        let _ = counters;
+        self.begin_replay();
         self.screen = None;
         Ok(())
+    }
+
+    /// A replay's match just loaded (a fight, a tag brawl, a Force stage): its inputs play it, and it is run
+    /// through once first (the seek copies, the rounds, the check).
+    fn begin_replay(&mut self) {
+        let Some(next) = self.replay_next.take() else { return };
+        let (entry, inputs) = *next;
+        if let Some(t) = self.tag.as_mut() {
+            t.game.play(inputs);
+        } else if let Some(f) = self.fight.as_mut() {
+            f.bout.play(inputs);
+        } else {
+            return;
+        }
+        let before = self.replay_counters_before.take().unwrap_or_else(kumite_game::bout::counters);
+        self.replay_view = Some(Box::new(replay_view::View::new(entry, before)));
+        self.replay_join_next = 0;
+        let t = Instant::now();
+        self.replay_prepare();
+        log::info!("replay run through in {:.0} ms", t.elapsed().as_secs_f32() * 1000.0);
+    }
+
+    /// The match being recorded was changed by a cheat or a debug tool: its inputs no longer make it, so it is not
+    /// saved as a replay.
+    fn spoil_replay(&mut self, why: &str) {
+        if self.replay_rec.take().is_some() {
+            log::info!("this match is not saved as a replay: {why}");
+        }
+    }
+
+    /// A replay at its end: it stops there (paused), checked once against the recorded state.
+    fn replay_ended(&mut self) {
+        let hash = self.match_hash();
+        if let Some(v) = self.replay_view.as_mut() {
+            if !v.ended {
+                v.ended = true;
+                v.watched_ok = Some(hash == v.file.hash);
+                log::info!("replay {}: watched to its end, the state as recorded: {:?}", v.id, v.watched_ok);
+            }
+        }
+        self.debug.paused = true;
+    }
+
+    /// The replay's match as it is now (a seek's copy).
+    fn replay_snapshot(&self) -> Option<replay_view::Snapshot> {
+        use replay_view::Snapshot as S;
+        if let Some(t) = self.tag.as_ref() {
+            return Some(S::Tag(Box::new(t.game.clone())));
+        }
+        let f = self.fight.as_ref()?;
+        Some(match self.force.as_ref().filter(|_| self.force_fight()) {
+            Some(run) => S::Force(Box::new(f.bout.clone()), Box::new(run.clone())),
+            None => S::Fight(Box::new(f.bout.clone())),
+        })
+    }
+
+    fn replay_restore(&mut self, snap: replay_view::Snapshot) {
+        use replay_view::Snapshot as S;
+        match snap {
+            S::Tag(g) => {
+                if let Some(t) = self.tag.as_mut() {
+                    t.game = *g;
+                }
+            }
+            S::Fight(b) => {
+                if let Some(f) = self.fight.as_mut() {
+                    f.bout = *b;
+                }
+            }
+            S::Force(b, run) => {
+                if let Some(f) = self.fight.as_mut() {
+                    f.bout = *b;
+                }
+                self.force = Some(*run);
+            }
+        }
+        // (the joins still to come: from this step on)
+        let at = self.replay_played() as u64;
+        self.replay_join_next = self.replay_joins.iter().take_while(|j| j.0 < at).count();
+    }
+
+    /// The steps the replay has played.
+    fn replay_played(&self) -> usize {
+        match (self.tag.as_ref(), self.fight.as_ref()) {
+            (Some(t), _) => t.game.played(),
+            (None, Some(f)) => f.bout.played(),
+            _ => 0,
+        }
+    }
+
+    /// The replay's match is at its end (where it was recorded to).
+    fn replay_finished(&self) -> bool {
+        match (self.tag.as_ref(), self.fight.as_ref()) {
+            (Some(t), _) => t.game.finished() && t.game.phase_frame >= TAG_SAVED_AFTER,
+            (None, Some(f)) => f.bout.finished(),
+            _ => true,
+        }
+    }
+
+    /// The state hash a replay is checked by: the bout's or the tag brawl's.
+    fn match_hash(&self) -> u64 {
+        match (self.tag.as_ref(), self.fight.as_ref()) {
+            (Some(t), _) => t.game.state_hash(),
+            (None, Some(f)) => f.bout.game.state_hash(),
+            _ => 0,
+        }
+    }
+
+    /// The round on: the bout's, the tag brawl's.
+    fn match_round(&self) -> u32 {
+        match (self.tag.as_ref(), self.fight.as_ref()) {
+            (Some(t), _) => t.game.round,
+            (None, Some(f)) => f.bout.round,
+            _ => 0,
+        }
+    }
+
+    /// A Force replay's players joining before this step.
+    fn replay_joins_due(&mut self) {
+        let at = self.replay_played() as u64;
+        while let Some(&(step, who)) = self.replay_joins.get(self.replay_join_next) {
+            if step > at {
+                break;
+            }
+            self.replay_join_next += 1;
+            match who {
+                1 => self.join_force_partner(),
+                p => self.join_force_player(usize::from(p)),
+            }
+        }
+    }
+
+    /// One step of the replay's match, without its sounds and effects (the run-through, a seek): the fight's or the
+    /// tag brawl's, a Force stage's logic after it.
+    fn replay_sim_step(&mut self) {
+        if let Some(t) = self.tag.as_mut() {
+            t.game.step([Pad::default(); 4]);
+            return;
+        }
+        self.replay_joins_due();
+        let Some(f) = self.fight.as_mut() else { return };
+        f.bout.step([Pad::default(); 2]);
+        if self.force_fight() {
+            let (Some(run), Some(f)) = (self.force.as_mut(), self.fight.as_mut()) else { return };
+            let ctx = ForceCtx::of(run);
+            if let Some(st) = run.stage.as_mut() {
+                let _ = force_sim(&self.roster, &self.assets, &self.actor_cache, &ctx, &mut f.bout, st, false);
+            }
+        }
+    }
+
+    /// The run-through: the match played to its end once, a copy kept every so often and the rounds' starts
+    /// noted, its end checked against the recorded state; then back to its start.
+    fn replay_prepare(&mut self) {
+        let Some(total) = self.replay_view.as_ref().map(|v| v.total) else { return };
+        let Some(start) = self.replay_snapshot() else { return };
+        let (mut snaps, mut rounds, mut round) = (vec![(0, start.clone())], Vec::new(), 0);
+        for step in 0..total {
+            if step > 0 && step % replay_view::SNAPSHOT_EVERY == 0 {
+                if let Some(s) = self.replay_snapshot() {
+                    snaps.push((step, s));
+                }
+            }
+            self.replay_sim_step();
+            let r = self.match_round();
+            if r != round {
+                round = r;
+                rounds.push((step, r));
+            }
+        }
+        let verified = self.replay_view.as_ref().is_some_and(|v| self.match_hash() == v.file.hash);
+        if !verified {
+            log::warn!("the replay's run-through ended in another state than recorded");
+        }
+        self.replay_restore(start);
+        if let Some(v) = self.replay_view.as_mut() {
+            (v.snapshots, v.rounds, v.verified) = (snaps, rounds, verified);
+        }
     }
 
     /// A stage's meshes and the effect atlas (no fighters yet).
@@ -916,6 +1097,10 @@ impl App {
         self.rumble_tick();
         let step_no = self.logic_steps;
         self.logic_steps += 1;
+        // a Force replay: its players joining before this step
+        if self.replay_view.is_some() && self.force_fight() {
+            self.replay_joins_due();
+        }
         // a demo: the keys and cheats recorded before this step
         if let Some(pb) = self.demo_play.as_mut() {
             let events = pb.events(step_no);
@@ -1433,14 +1618,8 @@ impl App {
         }
         if fight.bout.finished() {
             // a replay ends on its last frame (the viewer stays); a match played is saved as one, then goes on
-            if let Some(v) = self.replay_view.as_mut() {
-                // (the match as watched ends where it was recorded to)
-                if !v.ended {
-                    v.ended = true;
-                    v.watched_ok = Some(fight.bout.game.state_hash() == v.file.hash);
-                    log::info!("replay {}: watched to its end, the state as recorded: {:?}", v.id, v.watched_ok);
-                }
-                self.debug.paused = true;
+            if self.replay_view.is_some() {
+                self.replay_ended();
                 return;
             }
             self.save_replay();
@@ -1448,28 +1627,55 @@ impl App {
         }
     }
 
-    /// The match just over, saved as a replay (its tape and what made it).
+    /// The match just over, saved as a replay (its tape and what made it): a fight, a tag brawl, a Force stage.
     fn save_replay(&mut self) {
-        let (Some(rec), Some(f)) = (self.replay_rec.take(), self.fight.as_mut()) else { return };
-        let Some(tape) = f.bout.tape.take() else { return };
-        let mode = match rec.setup.mode {
-            Mode::Arcade => "ARCADE",
-            Mode::Versus => "VS",
-            Mode::TeamBattle => "TEAM BATTLE",
-            Mode::TimeAttack => "TIME ATTACK",
-            Mode::Survival => "SURVIVAL",
-            Mode::Ball => "BALL",
-            Mode::ExtraLevels => "EXTRA LEVELS",
-            _ => "MATCH",
+        let Some(rec) = self.replay_rec.take() else { return };
+        let name = |c: usize| self.roster.characters.get(c).map_or_else(|| "?".to_string(), |c| c.name.clone());
+        let (tape, title, result) = if let Some(t) = self.tag.as_mut() {
+            let Some(tape) = t.game.tape.take() else { return };
+            let s = t.setup.match_slots();
+            let names: Vec<String> = s.iter().map(|p| name(p.character)).collect();
+            let title = if t.game.teams == [0, 0, 1, 1] { format!("TAG BRAWL · {} & {} vs {} & {}", names[0], names[1], names[2], names[3]) } else { format!("TAG BRAWL · {}", names.join(", ")) };
+            let winner = match t.game.phase {
+                kumite_game::tag::TagPhase::MatchOver { winner } => winner,
+                _ => None,
+            };
+            let score = t.game.wins.iter().map(u32::to_string).collect::<Vec<_>>().join("–");
+            let result = winner.map_or_else(|| format!("DRAW {score}"), |w| format!("TEAM {} WINS {score}", w + 1));
+            (tape, title, result)
+        } else if let Some(f) = self.fight.as_mut() {
+            let Some(tape) = f.bout.tape.take() else { return };
+            let winner = match f.bout.phase {
+                Phase::MatchOver { winner } => winner,
+                _ => None,
+            };
+            match &rec.game {
+                replay::Match::Force { start, .. } => {
+                    let number = self.force.as_ref().and_then(|r| r.card().0);
+                    let stage = number.map_or_else(|| "FINAL STAGE".to_string(), |n| format!("STAGE {}", n + 1));
+                    (tape, format!("FORCE · {} · {}", name(start.player.0), stage), if winner == Some(0) { "STAGE CLEAR".into() } else { "GAME OVER".into() })
+                }
+                replay::Match::Fight { setup, .. } => {
+                    let mode = match setup.mode {
+                        Mode::Arcade => "ARCADE",
+                        Mode::Versus => "VS",
+                        Mode::TeamBattle => "TEAM BATTLE",
+                        Mode::TimeAttack => "TIME ATTACK",
+                        Mode::Survival => "SURVIVAL",
+                        Mode::Ball => "BALL",
+                        Mode::ExtraLevels => "EXTRA LEVELS",
+                        _ => "MATCH",
+                    };
+                    let online = if rec.online { "ONLINE " } else { "" };
+                    let score = format!("{}–{}", f.bout.wins[0], f.bout.wins[1]);
+                    let result = winner.map_or_else(|| format!("DRAW {score}"), |w| format!("{} WINS {score}", f.names[w.min(1)]));
+                    (tape, format!("{online}{mode} · {} vs {}", f.names[0], f.names[1]), result)
+                }
+                replay::Match::Tag { .. } => return,
+            }
+        } else {
+            return;
         };
-        let online = if rec.online { "ONLINE " } else { "" };
-        let title = format!("{online}{mode} · {} vs {}", f.names[0], f.names[1]);
-        let winner = match f.bout.phase {
-            Phase::MatchOver { winner } => winner,
-            _ => None,
-        };
-        let score = format!("{}–{}", f.bout.wins[0], f.bout.wins[1]);
-        let result = winner.map_or_else(|| format!("DRAW {score}"), |w| format!("{} WINS {score}", f.names[w.min(1)]));
         let inputs = tape.to_vec();
         let file = replay::ReplayFile {
             version: replay::VERSION,
@@ -1480,11 +1686,9 @@ impl App {
             result,
             online: rec.online,
             kept: false,
-            setup: rec.setup,
-            params: rec.params,
-            ladder: rec.ladder,
+            game: rec.game,
             steps: inputs.len() as u64,
-            hash: f.bout.game.state_hash(),
+            hash: self.match_hash(),
             inputs: replay::encode(&inputs),
         };
         match replay::save(&file) {
@@ -1493,15 +1697,34 @@ impl App {
         }
     }
 
-    /// Watch a replay: its match loaded from its setup and parameters, its inputs playing it.
+    /// Watch a replay: its match loaded from what made it (a fight, a tag brawl, a Force stage), its inputs playing
+    /// it.
     fn play_replay(&mut self, entry: replay::Entry) {
         let inputs: Arc<[kumite_game::bout::StepInput]> = replay::decode(&entry.file.inputs).into();
-        let (setup, ladder) = (entry.file.setup.clone(), entry.file.ladder.clone());
+        let game = entry.file.game.clone();
         self.replays = None;
         self.replay_counters_before = Some(kumite_game::bout::counters());
         self.replay_next = Some(Box::new((entry, inputs)));
         (self.debug.paused, self.debug.speed, self.debug.free_cam) = (false, 1.0, None);
-        self.load_fight(setup, ladder);
+        self.replay_joins.clear();
+        match game {
+            replay::Match::Fight { setup, ladder, .. } => self.load_fight(setup, ladder),
+            replay::Match::Tag { setup, stage } => {
+                self.replay_tag_stage = Some(self.tag_stage);
+                self.tag_stage = Some(stage);
+                self.start_tag(setup);
+            }
+            replay::Match::Force { setup, start, joins } => {
+                let Some(data) = self.force_data.clone() else {
+                    self.replay_next = None;
+                    self.debug.say("this game data has no Force");
+                    return;
+                };
+                self.force = Some(forcerun::ForceRun::from_start(data, &start));
+                self.replay_joins = joins;
+                self.load_fight(setup, Vec::new());
+            }
+        }
     }
 
     /// What the replays' list asked for.
@@ -1608,7 +1831,14 @@ impl App {
         let Some(v) = self.replay_view.take() else { return };
         kumite_game::bout::set_counters(v.counters_before);
         (self.debug.paused, self.debug.speed, self.debug.free_cam) = (false, 1.0, None);
-        (self.fight, self.scene) = (None, None);
+        (self.fight, self.scene, self.tag, self.force) = (None, None, None, None);
+        if let Some(stage) = self.replay_tag_stage.take() {
+            self.tag_stage = stage;
+        }
+        self.replay_joins.clear();
+        if let Some(vfx) = self.vfx.as_mut() {
+            vfx.clear();
+        }
         if let Some(a) = self.audio.as_mut() {
             a.music(None);
         }
@@ -1619,24 +1849,25 @@ impl App {
     /// Seek the replay to `step`: from the copy before it, run on to it (the sounds and effects of the steps
     /// passed are not played).
     fn replay_seek(&mut self, step: usize) {
-        let (Some(v), Some(f)) = (self.replay_view.as_mut(), self.fight.as_mut()) else { return };
+        let at = self.replay_played();
+        let Some(v) = self.replay_view.as_mut() else { return };
         let step = step.min(v.total);
         if step < v.total {
             v.ended = false;
         }
-        let at = f.bout.played();
-        if step < at || step - at > replay_view::SNAPSHOT_EVERY {
-            if let Some(b) = v.snapshot_before(step) {
-                f.bout = b.clone();
-            }
+        let from = (step < at || step - at > replay_view::SNAPSHOT_EVERY).then(|| v.snapshot_before(step).map(|s| s.1.clone())).flatten();
+        if let Some(snap) = from {
+            self.replay_restore(snap);
         }
-        while f.bout.played() < step && !f.bout.finished() {
-            f.bout.step([Pad::default(); 2]);
+        while self.replay_played() < step && !self.replay_finished() {
+            self.replay_sim_step();
         }
         if let Some(vfx) = self.vfx.as_mut() {
             vfx.clear();
         }
-        self.hud.reset(&f.info);
+        if let Some(f) = self.fight.as_ref() {
+            self.hud.reset(&f.info);
+        }
         self.lag = Duration::ZERO;
     }
 
@@ -1648,7 +1879,7 @@ impl App {
                 replay_view::Request::Seek(s) => self.replay_seek(s),
                 replay_view::Request::TogglePause => {
                     // at the end: from the start again
-                    if self.fight.as_ref().is_some_and(|f| f.bout.finished()) {
+                    if self.replay_finished() {
                         self.replay_seek(0);
                         self.debug.paused = false;
                     } else {
@@ -1692,8 +1923,8 @@ impl App {
     /// A key while a replay plays (keyboard or pad): START pauses, BACK leaves, left / right seek 5 s, up / down the
     /// speed, button 1 a step.
     fn replay_key(&mut self, key: Key) {
+        let at = self.replay_played();
         let Some(v) = self.replay_view.as_mut() else { return };
-        let at = self.fight.as_ref().map_or(0, |f| f.bout.played());
         let speed = self.debug.speed;
         let next_speed = |up: bool| {
             let i = replay_view::SPEEDS.iter().position(|s| (s - speed).abs() < 1e-3).unwrap_or(3);
@@ -2340,6 +2571,7 @@ impl App {
         match e {
             demo::Event::Key(player, key) => self.menu_key(player, key),
             demo::Event::Cheat(c) => {
+                self.spoil_replay("a cheat changed the match");
                 self.cheat(c);
                 true
             }
@@ -2577,6 +2809,9 @@ impl App {
                     partners: None,
                 };
                 self.load_fight(setup, Vec::new());
+                if spec.force_boss || spec.force_keys != 0 {
+                    self.spoil_replay("--boss / --force-keys changed the stage");
+                }
                 if let Some(st) = self.force.as_mut().and_then(|r| r.stage.as_mut()) {
                     st.keys = spec.force_keys;
                     if spec.force_boss {
@@ -2952,6 +3187,8 @@ impl App {
     /// (out of play until spawned), the stage logic; the final stage brings its character in at once.
     fn load_force(&mut self, r: &Renderer, setup: FightSetup) -> Result<()> {
         let run = self.force.as_mut().context("no Force run")?;
+        // (the run as this stage begins: a replay of the stage starts from it)
+        let start = run.start();
         let data = run.data.clone();
         let i = run.index.min(data.final_index());
         let c = &self.roster.characters[run.player.0];
@@ -3058,7 +3295,28 @@ impl App {
                 self.join_force_player(p);
             }
         }
+        // every stage is recorded (from here: the players carried over have joined), saved as a replay at its end;
+        // or a replay plays
+        self.replay_rec = None;
+        // (`--ko-boss`: the stage's logic changed, not recorded)
+        if self.replay_next.is_none() && !self.force_ko_boss {
+            if let Some(f) = self.fight.as_mut() {
+                f.bout.tape = Some(Default::default());
+                let game = replay::Match::Force { setup: f.setup.clone().context("the stage's setup")?, start, joins: Vec::new() };
+                self.replay_rec = Some(ReplayRec { game, online: self.net.is_some() || self.room.is_some() });
+            }
+        }
+        self.begin_replay();
         Ok(())
+    }
+
+    /// A player joining a Force stage being recorded (1 the co-op partner, 2 and 3 for 3P and 4P): noted with the
+    /// step it comes before.
+    fn note_force_join(&mut self, who: u8) {
+        let at = self.fight.as_ref().and_then(|f| f.bout.tape.as_ref()).map_or(0, kumite_game::bout::Tape::len) as u64;
+        if let Some(ReplayRec { game: replay::Match::Force { joins, .. }, .. }) = self.replay_rec.as_mut() {
+            joins.push((at, who));
+        }
     }
 
     /// Force for more than two: the soldiers' places and their CPUs for every player (two a player).
@@ -3077,6 +3335,7 @@ impl App {
     /// Force (OpenKumite's own): 3P or 4P (`p` 2, 3) comes in beside the player, as another character (the
     /// run's own pick again on later stages), at full health; the soldiers come two a player from then.
     fn join_force_player(&mut self, p: usize) {
+        self.note_force_join(p as u8);
         self.widen_force();
         let (Some(run), Some(fight)) = (self.force.as_mut(), self.fight.as_mut()) else { return };
         let n = self.roster.characters.len().max(1);
@@ -3103,6 +3362,7 @@ impl App {
     /// Character in the next costume (or the run's partner again), at full health; the keyboard splits into the
     /// two VS layouts.
     fn join_force_partner(&mut self) {
+        self.note_force_join(1);
         let (Some(run), Some(fight)) = (self.force.as_mut(), self.fight.as_mut()) else { return };
         let (ch, cos) = run.partner.unwrap_or_else(|| {
             let n = self.roster.characters[run.player.0].costumes.len().max(1);
@@ -3307,9 +3567,17 @@ impl App {
                     let c = &roster.characters[home.character];
                     audio.music(roster.music_of(c.id, home.costume).and_then(|b| sound.music(b)).or_else(|| sound.music_for(&c.name)));
                 }
+                // every brawl is recorded (its inputs on the game's tape), saved as a replay at its end; or a replay plays
+                let mut game = game;
+                self.replay_rec = None;
+                if self.replay_next.is_none() {
+                    game.tape = Some(Default::default());
+                    self.replay_rec = Some(ReplayRec { game: replay::Match::Tag { setup: setup.clone(), stage }, online: self.net.is_some() || self.room.is_some() });
+                }
                 self.tag = Some(tagrun::TagRun::new(game, setup, &self.roster));
                 self.fight = None;
                 self.screen = None;
+                self.begin_replay();
             }
             Err(e) => self.load_failed("the tag brawl", &e),
         }
@@ -3335,6 +3603,11 @@ impl App {
     /// One TAG BRAWL step: four pads (the keyboard's layouts and the gamepads by player), the match, the HUD,
     /// effects and sounds.
     fn step_tag(&mut self) {
+        // a replay at its end stays there
+        if self.replay_view.is_some() && self.tag.as_ref().is_some_and(|t| t.game.finished() && t.game.phase_frame >= TAG_SAVED_AFTER) {
+            self.replay_ended();
+            return;
+        }
         let Some(t) = self.tag.as_ref() else { return };
         let players: Vec<usize> = t.setup.slots.iter().filter_map(|s| s.player).collect();
         // (online: this computer's two players split the keyboard)
@@ -3445,7 +3718,14 @@ impl App {
             self.restart_tag(setup);
             return;
         }
-        if g.finished() && g.phase_frame >= 150 && t.cont.is_none() {
+        if g.finished() && g.phase_frame >= TAG_SAVED_AFTER && t.cont.is_none() {
+            // the brawl over: saved as a replay (a replay stops here, on its last frame)
+            if self.replay_view.is_some() {
+                self.replay_ended();
+                return;
+            }
+            self.save_replay();
+            let Some(t) = self.tag.as_mut() else { return };
             // online: the arcade's next pair in a session of its own; lost or cleared, back to the setup
             if self.room.is_some() {
                 match t.next() {
@@ -4039,7 +4319,9 @@ impl App {
                             Art::shade(&painter, &view, full, [art::additive(egui::Color32::from_gray(cs.scene.white)); 4]);
                         }
                     } else if let Some(t) = tag {
-                        t.hud.draw(ctx, art, &hud.data, &t.game, &t.info);
+                        if replay_view.as_ref().is_none_or(|v| v.hud) {
+                            t.hud.draw(ctx, art, &hud.data, &t.game, &t.info);
+                        }
                         if let Some((c, player)) = t.pause {
                             draw_pause(ctx, art, &hud.data.pause_items, c, player, frames, false);
                         }
@@ -4092,9 +4374,15 @@ impl App {
                             draw_pause(ctx, art, items, c, player, frames, ball);
                         }
                         debug.ui(ctx, &f.bout.game, catalog, &adapter, size);
-                        if let Some(v) = replay_view.as_deref_mut() {
-                            v.ui(ctx, &f.bout, paused, speed, debug.free_cam.is_some());
-                        }
+                    }
+                    // a replay's controls, over a fight or a tag brawl: the steps played, each player's inputs
+                    if let Some(v) = replay_view.as_deref_mut() {
+                        let (at, inputs): (usize, Vec<(String, &kumite_sim::input::InputState)>) = match (tag, fight) {
+                            (Some(t), _) => (t.game.played(), t.game.melee.actors.iter().enumerate().map(|(i, a)| (format!("{}P", i + 1), &a.input)).collect()),
+                            (None, Some(f)) => (f.bout.played(), f.bout.game.fight.fighters.iter().take(2).enumerate().map(|(i, a)| (format!("P{}", i + 1), &a.input)).collect()),
+                            _ => (0, Vec::new()),
+                        };
+                        v.ui(ctx, at, &inputs, paused, speed, debug.free_cam.is_some());
                     }
                     if let Some(b) = replays.as_deref_mut() {
                         browser_action = b.ui(ctx);
@@ -4183,6 +4471,9 @@ impl App {
         for action in std::mem::take(&mut self.debug.actions) {
             if online && !matches!(action, Action::Screenshot) {
                 continue;
+            }
+            if !matches!(action, Action::Screenshot) {
+                self.spoil_replay("the debug panel changed the match");
             }
             let game = self.fight.as_mut().map(|f| &mut f.bout.game);
             match action {
@@ -4281,8 +4572,8 @@ impl App {
         if self.screen.is_some() {
             return false;
         }
+        let at = self.replay_played();
         let Some(v) = self.replay_view.as_mut() else { return false };
-        let at = self.fight.as_ref().map_or(0, |f| f.bout.played());
         use replay_view::Request as R;
         let r = match code {
             KeyCode::Space if !repeat => R::TogglePause,
@@ -6224,6 +6515,9 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
         replay_next: None,
         replay_view: None,
         replay_counters_before: None,
+        replay_joins: Vec::new(),
+        replay_join_next: 0,
+        replay_tag_stage: None,
         replays: None,
         keys_after: None,
         #[cfg(not(target_arch = "wasm32"))]

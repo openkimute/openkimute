@@ -81,3 +81,35 @@ fn a_rollback_takes_the_tape_back_with_the_match() {
     assert_eq!(tape.len(), 1200);
     assert!(tape.iter().zip(&want).all(|(t, w)| t.pads[0] == *w), "the tape kept a mispredicted step");
 }
+
+#[test]
+fn a_tag_brawl_replayed_from_its_tape_is_the_same_brawl() {
+    use kumite_game::tag::{Slot, TagGame};
+    let Some(a) = assets() else { return };
+    // two people (scripted) and two CPUs, two teams
+    let slots = [Slot { record: 71, cpu: None }, Slot { record: 79, cpu: None }, Slot { record: 71, cpu: Some((1, 4)) }, Slot { record: 79, cpu: Some((1, 4)) }];
+    let load = || TagGame::load(&a, slots, vec![0, 0, 1, 1], kumite_game::ai_data(&a).unwrap(), 2).unwrap();
+    let p1: Vec<Pad> = parse_script(&["f*20,1,n*6,2,n*8,3,n*10,b*8"; 60].join(",")).unwrap();
+    let p2: Vec<Pad> = parse_script(&["f*12,4,n*9,d+1,n*14,b*5"; 60].join(",")).unwrap();
+    let mut live = load();
+    live.tape = Some(Default::default());
+    let mut hashes = Vec::new();
+    for step in 0..30_000 {
+        live.step([p1[step % p1.len()], p2[step % p2.len()], Pad::default(), Pad::default()]);
+        hashes.push(live.state_hash());
+        if live.finished() {
+            break;
+        }
+    }
+    assert!(live.finished(), "the brawl did not end in 30000 steps");
+    eprintln!("the brawl: {} steps ({:.0} s), wins {:?}", hashes.len(), hashes.len() as f32 / 60.0, live.wins);
+    let tape = live.tape.take().unwrap();
+    let mut replay = load();
+    replay.play(Arc::from(tape.to_vec()));
+    for (step, want) in hashes.iter().enumerate() {
+        replay.step([Pad { buttons: 15, ..Pad::default() }; 4]);
+        assert_eq!(replay.state_hash(), *want, "the replay went apart at step {step}");
+    }
+    assert!(replay.finished());
+    assert_eq!(replay.wins, live.wins);
+}

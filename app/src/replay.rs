@@ -11,7 +11,8 @@ use kumite_game::bout::StepInput;
 use kumite_sim::input::Pad;
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 1;
+/// (2: the tag brawl and Force too, the match's kind in `game`)
+pub const VERSION: u32 = 2;
 /// The newest replays kept (natively; a browser's storage keeps fewer).
 pub const KEEP: usize = if cfg!(target_arch = "wasm32") { 15 } else { 50 };
 /// Native files' extension.
@@ -32,6 +33,18 @@ pub struct MatchParams {
     pub counters: [usize; 3],
 }
 
+/// What a match is made from, by its kind.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Match {
+    /// Two fighters' match (Ball 2 ON 2 too): the setup, what the mode gave it, the arcade's ladder.
+    Fight { setup: FightSetup, params: MatchParams, ladder: Vec<usize> },
+    /// The tag brawl: its four and their teams, on this stage.
+    Tag { setup: crate::tagrun::TagSetup, stage: usize },
+    /// A Force stage: its fight's setup, the run as the stage began, and players joining on the way (the step
+    /// before which, and who: 1 the co-op partner, 2 and 3 for 3P and 4P).
+    Force { setup: FightSetup, start: crate::forcerun::ForceStart, joins: Vec<(u64, u8)> },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReplayFile {
     pub version: u32,
@@ -47,9 +60,8 @@ pub struct ReplayFile {
     pub result: String,
     pub online: bool,
     pub kept: bool,
-    pub setup: FightSetup,
-    pub params: MatchParams,
-    pub ladder: Vec<usize>,
+    /// What made the match.
+    pub game: Match,
     /// Steps in the match.
     pub steps: u64,
     /// The game's state hash after the last step.
@@ -309,9 +321,7 @@ mod tests {
             result: "r".into(),
             online: false,
             kept: false,
-            setup,
-            params,
-            ladder: vec![],
+            game: Match::Fight { setup, params, ladder: vec![] },
             steps: 1,
             hash: 0,
             inputs: encode(&[StepInput::default()]),

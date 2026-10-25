@@ -677,7 +677,8 @@ impl ForceStage {
                     let kind = self.slots[k].wanted;
                     self.slots[k].kind = kind;
                     let actor = self.soldiers[kind.min(1)].clone();
-                    game.set_actor(self.at[k], &actor);
+                    // (slots 2.. are the widened melee's actors 6..: `at` covers the first two only)
+                    game.set_actor(self.slot_actor(k), &actor);
                     self.slots[k].state = 4;
                 }
             }
