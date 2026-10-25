@@ -16,5 +16,13 @@ wgpu.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
 
+# the window's frames as IOSurfaces on a layer (src/mac_layer.rs); the versions wgpu's Metal backend uses
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-core-foundation = "0.3"
+objc2-io-surface = "0.3"
+objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
+objc2-quartz-core = "0.3"
+
 [lints]
 workspace = true

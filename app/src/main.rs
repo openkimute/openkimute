@@ -407,6 +407,9 @@ struct App {
     drag_pan: bool,
     last: Instant,
     lag: Duration,
+    /// Wakes the event loop from the renderer's present thread when it takes a frame (the next can be drawn).
+    #[cfg(not(target_arch = "wasm32"))]
+    wake: Option<winit::event_loop::EventLoopProxy<()>>,
     /// Frames stepped, for the once-a-second status log.
     steps: u64,
     /// Scripted menu keys by frame (`--keys "30:start,60:b1"`), and the frame to quit at (`--quit-after`).
@@ -4393,6 +4396,7 @@ impl App {
         // (in a browser the canvas may have been resized while the GPU was being set up)
         let size = window.inner_size();
         renderer.resize(size.width, size.height);
+        self.wake_on_ready(&renderer);
         self.egui = Some(EguiLayer::new(renderer.device(), renderer.overlay_format(), Some(&window)));
         if self.sandbox {
             if let Err(e) = self.load(&renderer, None, Vec::new()) {
@@ -4406,6 +4410,18 @@ impl App {
         self.refit();
         // (applied: later refits keep what the player chooses)
         self.graphics_preset = None;
+    }
+
+    /// The renderer's present thread wakes the loop when it takes a frame: the next is drawn then (on_about_to_wait).
+    fn wake_on_ready(&self, renderer: &Renderer) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(wake) = self.wake.clone() {
+            renderer.on_ready(move || {
+                let _ = wake.send_event(());
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = renderer;
     }
 
     /// The display and the GPU as they are now (the window may have moved to another screen, the page resized).
@@ -4842,7 +4858,10 @@ impl App {
                         self.step();
                     }
                 }
-                self.draw();
+                // (a frame drawn while the last waits for the window would only replace it)
+                if self.renderer.as_ref().is_none_or(Renderer::ready) {
+                    self.draw();
+                }
             }
             _ => {}
         }
@@ -4865,8 +4884,22 @@ impl App {
         if self.renderer.is_some() {
             self.watch_page();
         }
+        // A frame as soon as one would be shown: the window's pace (vsync on), or the GPU's (off). While the last is
+        // still waiting for the window (on macOS a screen recording holds it up to a second), the loop waits for the
+        // present thread's wake, and goes on stepping the game at its own times meanwhile.
         if let Some(w) = &self.window {
-            w.request_redraw();
+            if self.renderer.as_ref().is_none_or(Renderer::ready) {
+                w.request_redraw();
+            } else if !self.debug.paused {
+                let due = self.last + STEP.saturating_sub(self.lag).div_f32(self.debug.speed.max(0.05));
+                if Instant::now() >= due {
+                    w.request_redraw();
+                } else {
+                    event_loop.set_control_flow(ControlFlow::WaitUntil(due));
+                }
+            } else {
+                event_loop.set_control_flow(ControlFlow::Wait);
+            }
         }
     }
 
@@ -4903,6 +4936,7 @@ impl App {
                 match Renderer::new(w.clone(), size.width, size.height) {
                     Ok(mut r) => {
                         r.set_settings(self.graphics.render());
+                        self.wake_on_ready(&r);
                         // (the overlay's textures belonged to the old device: made again, the pictures reloaded)
                         self.egui = Some(EguiLayer::new(r.device(), r.overlay_format(), Some(&w)));
                         self.art = None;
@@ -5690,6 +5724,8 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
         cursor: (0.0, 0.0),
         last: Instant::now(),
         lag: Duration::ZERO,
+        #[cfg(not(target_arch = "wasm32"))]
+        wake: None,
         steps: 0,
         records,
         key_script: arg("--keys").map(|k| parse_keys(&k)).transpose()?.unwrap_or_default(),
@@ -5789,7 +5825,11 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
     app.gamepads = Some(gamepad::Gamepads::new());
     app.rumble = kumite_game::rumble::Rumble::new(kumite_game::rumble::RumbleData::load(&app.assets));
     #[cfg(not(target_arch = "wasm32"))]
-    EventLoop::new()?.run_app(&mut app)?;
+    {
+        let event_loop = EventLoop::new()?;
+        app.wake = Some(event_loop.create_proxy());
+        event_loop.run_app(&mut app)?;
+    }
     #[cfg(target_arch = "wasm32")]
     {
         use winit::platform::web::EventLoopExtWebSys;

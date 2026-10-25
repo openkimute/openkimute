@@ -10,12 +10,20 @@
 //! - Debug lines ([`LineVertex`]): drawn last, on top of everything.
 //!
 //! An [`Overlay`] (the debug UI) can draw into the frame after the scene, before it is presented.
+//!
+//! Native builds draw each frame into an image of their own and hand it to a thread that presents it (`present`):
+//! waiting for the window never holds up the caller (see [`Renderer::ready`]).
 
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+#[cfg(target_os = "macos")]
+mod mac_layer;
+#[cfg(not(target_arch = "wasm32"))]
+mod present;
 
 pub use wgpu;
 
@@ -301,9 +309,19 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 ";
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// The macOS layer frames may be shown on (`mac_layer`); none elsewhere.
+#[cfg(target_os = "macos")]
+type Layer = mac_layer::Layer;
+#[cfg(not(target_os = "macos"))]
+type Layer = std::convert::Infallible;
+
 pub struct Renderer {
-    /// Window surface, or `None` when rendering offscreen (tests, screenshots).
+    /// Window surface drawn into directly (a browser; a window that cannot be copied into), or `None`: offscreen
+    /// (tests, screenshots) or through the presenter.
     surface: Option<wgpu::Surface<'static>>,
+    /// The window's frames, shown from a thread of their own (native).
+    #[cfg(not(target_arch = "wasm32"))]
+    presenter: Option<present::Presenter>,
     /// Offscreen colour target (headless mode).
     offscreen: Option<wgpu::Texture>,
     device: wgpu::Device,
@@ -360,18 +378,26 @@ impl Renderer {
     /// The same, waiting for the GPU without blocking (a browser cannot block).
     pub async fn new_async(target: impl Into<wgpu::SurfaceTarget<'static>>, width: u32, height: u32) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let target = target.into();
+        // macOS: the frames on a layer of the window's own, over wgpu's (mac_layer), unless OPENKUMITE_PRESENT=surface
+        #[cfg(target_os = "macos")]
+        let view = mac_layer::view_of(&target).filter(|_| std::env::var("OPENKUMITE_PRESENT").as_deref() != Ok("surface"));
         let surface = instance.create_surface(target)?;
-        Self::init(instance, Some(surface), width, height).await
+        #[cfg(target_os = "macos")]
+        let layer = view.and_then(mac_layer::Layer::new);
+        #[cfg(not(target_os = "macos"))]
+        let layer = None;
+        Self::init(instance, Some(surface), layer, width, height).await
     }
 
     /// Create an offscreen renderer of a fixed size; read frames back with [`Renderer::capture`].
     #[cfg(not(target_arch = "wasm32"))]
     pub fn headless(width: u32, height: u32) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        pollster::block_on(Self::init(instance, None, width, height))
+        pollster::block_on(Self::init(instance, None, None, width, height))
     }
 
-    async fn init(instance: wgpu::Instance, surface: Option<wgpu::Surface<'static>>, width: u32, height: u32) -> Result<Self> {
+    async fn init(instance: wgpu::Instance, surface: Option<wgpu::Surface<'static>>, layer: Option<Layer>, width: u32, height: u32) -> Result<Self> {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -408,6 +434,14 @@ impl Renderer {
                 if views && !c.format.is_srgb() && c.format.add_srgb_suffix() != c.format {
                     c.view_formats.push(c.format.add_srgb_suffix());
                 }
+                // (native: copied in by the presenter, which configures it, or a layer instead)
+                #[cfg(not(target_arch = "wasm32"))]
+                if surface.get_capabilities(&adapter).usages.contains(wgpu::TextureUsages::COPY_DST) {
+                    c.usage |= wgpu::TextureUsages::COPY_DST;
+                } else if layer.is_none() {
+                    surface.configure(&device, &c);
+                }
+                #[cfg(target_arch = "wasm32")]
                 surface.configure(&device, &c);
                 c
             }
@@ -424,6 +458,22 @@ impl Renderer {
             },
         };
         let offscreen = surface.is_none().then(|| make_offscreen(&device, &config));
+        // native: through the presenter, to a layer (macOS, when the frame's format is its surfaces') or the surface
+        #[cfg(not(target_arch = "wasm32"))]
+        let (surface, presenter) = match surface {
+            #[cfg(target_os = "macos")]
+            Some(s) if layer.is_some() && config.format.remove_srgb_suffix() == mac_layer::FORMAT => {
+                let output = present::Output::Layer(layer.ok_or_else(|| anyhow::anyhow!("no layer"))?, s);
+                (None, present::Presenter::new(output, device.clone(), queue.clone(), config.clone()))
+            }
+            Some(s) if config.usage.contains(wgpu::TextureUsages::COPY_DST) => {
+                s.configure(&device, &config);
+                (None, present::Presenter::new(present::Output::Surface(s), device.clone(), queue.clone(), config.clone()))
+            }
+            s => (s, None),
+        };
+        #[cfg(not(target_os = "macos"))]
+        let _: Option<Layer> = layer;
         let srgb = config.format.add_srgb_suffix();
         let frame_format = if config.view_formats.contains(&srgb) { srgb } else { config.format };
         let depth = make_depth(&device, &config);
@@ -575,6 +625,8 @@ impl Renderer {
 
         Ok(Self {
             surface,
+            #[cfg(not(target_arch = "wasm32"))]
+            presenter,
             offscreen,
             device,
             queue,
@@ -630,9 +682,7 @@ impl Renderer {
         let s = RenderSettings { scale: s.scale.clamp(0.1, 4.0), ..s };
         if s.vsync != self.settings.vsync {
             self.config.present_mode = if s.vsync { wgpu::PresentMode::AutoVsync } else { wgpu::PresentMode::AutoNoVsync };
-            if let Some(surface) = &self.surface {
-                surface.configure(&self.device, &self.config);
-            }
+            self.configure_surface();
         }
         self.settings = s;
     }
@@ -693,11 +743,46 @@ impl Renderer {
         let (width, height) = (width.min(self.max_texture()), height.min(self.max_texture()));
         self.config.width = width;
         self.config.height = height;
-        match &self.surface {
-            Some(s) => s.configure(&self.device, &self.config),
-            None => self.offscreen = Some(make_offscreen(&self.device, &self.config)),
+        if !self.configure_surface() {
+            self.offscreen = Some(make_offscreen(&self.device, &self.config));
         }
         self.depth = make_depth(&self.device, &self.config);
+    }
+
+    /// The window's surface (directly, or through the presenter) as `config` now; false when offscreen.
+    fn configure_surface(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(p) = &self.presenter {
+            p.configure(&self.config);
+            return true;
+        }
+        match &self.surface {
+            Some(s) => {
+                s.configure(&self.device, &self.config);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a frame drawn now would be shown: the presenter has taken the last one (always, without it). Drawing
+    /// meanwhile only replaces a frame not yet shown; [`Renderer::on_ready`] tells when it is.
+    pub fn ready(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(p) = &self.presenter {
+            return p.ready();
+        }
+        true
+    }
+
+    /// Call `f` (on another thread) whenever the presenter takes a frame, so the next can be drawn.
+    pub fn on_ready(&self, f: impl Fn() + Send + Sync + 'static) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(p) = &self.presenter {
+            p.on_taken(Box::new(f));
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = f;
     }
 
     pub fn device(&self) -> &wgpu::Device {
@@ -996,10 +1081,17 @@ impl Renderer {
             },
             None => None,
         };
-        let frame_view = match &frame {
-            Some(f) => f.texture.create_view(&wgpu::TextureViewDescriptor { format: Some(self.frame_format), ..Default::default() }),
-            None => self.offscreen.as_ref().context("no render target")?.create_view(&Default::default()),
+        // without a surface drawn into: the presenter's next image, or the offscreen one
+        #[cfg(not(target_arch = "wasm32"))]
+        let slot = self.presenter.as_ref().map(|p| p.slot(&self.device, &self.config));
+        #[cfg(target_arch = "wasm32")]
+        let slot: Option<(usize, wgpu::Texture)> = None;
+        let target = match (&frame, &slot) {
+            (Some(f), _) => f.texture.clone(),
+            (None, Some((_, t))) => t.clone(),
+            (None, None) => self.offscreen.clone().context("no render target")?,
         };
+        let frame_view = target.create_view(&wgpu::TextureViewDescriptor { format: Some(self.frame_format), ..Default::default() });
         // the 3D (and the HUD under the fighters) into the scene's target at the render scale, or the frame
         let overlay_format = self.overlay_format();
         let smooth = self.settings.smooth_textures;
@@ -1030,13 +1122,7 @@ impl Renderer {
                     .collect()
             })
             .unwrap_or_default();
-        let overlay_view = || -> Result<wgpu::TextureView> {
-            let desc = wgpu::TextureViewDescriptor { format: Some(self.overlay_format()), ..Default::default() };
-            Ok(match &frame {
-                Some(f) => f.texture.create_view(&desc),
-                None => self.offscreen.as_ref().context("no render target")?.create_view(&desc),
-            })
-        };
+        let overlay_view = || -> Result<wgpu::TextureView> { Ok(target.create_view(&wgpu::TextureViewDescriptor { format: Some(self.overlay_format()), ..Default::default() })) };
         let mut enc = self.device.create_command_encoder(&Default::default());
         // the stage's fill (sRGB) in the frame's linear colour, else the default
         let fill = cam.background.map_or(self.clear, |c| {
@@ -1183,9 +1269,11 @@ impl Renderer {
         if let Some(o) = overlay {
             o.draw(&self.device, &self.queue, &mut enc, &overlay_view()?, [self.config.width, self.config.height]);
         }
-        let readback = match (&frame, self.capture_next) {
-            (Some(f), true) if self.config.usage.contains(wgpu::TextureUsages::COPY_SRC) => Some(self.copy_out(&mut enc, &f.texture)),
-            (Some(_), true) => {
+        // (the presenter's and offscreen images can always be read back; a surface when it allows)
+        let readable = frame.is_none() || self.config.usage.contains(wgpu::TextureUsages::COPY_SRC);
+        let readback = match (self.capture_next, readable) {
+            (true, true) => Some(self.copy_out(&mut enc, &target)),
+            (true, false) => {
                 self.captured = Some(Err(anyhow::anyhow!("this window's frames cannot be read back")));
                 None
             }
@@ -1196,6 +1284,10 @@ impl Renderer {
         // (shown before the readback: a failed capture does not drop the frame)
         if let Some(f) = frame {
             self.queue.present(f);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(p), Some((i, _))) = (&self.presenter, slot) {
+            p.publish(i);
         }
         if let Some((buf, padded)) = readback {
             self.captured = Some(self.read_back(&buf, padded));
