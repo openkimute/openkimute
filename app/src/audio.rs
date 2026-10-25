@@ -1,5 +1,8 @@
 //! Audio playback (rodio): looping music and one-shot sound effects from the converted WAV / FLAC files.
 //! What plays is decided by `kumite_game::sound`; this only plays it. Without an audio device the game is silent.
+//!
+//! Or, for a replay made a video (`video.rs`), nothing plays: what would is noted with the game step it starts at
+//! ([`Audio::capture`]), and mixed afterwards.
 
 use rodio::source::{Buffered, Source};
 use rodio::{Decoder, MixerDeviceSink, Player};
@@ -10,8 +13,30 @@ use std::path::{Path, PathBuf};
 
 type Clip = Buffered<Decoder<BufReader<File>>>;
 
+/// What the game asked to play, in capture.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    /// The music: a track (looped or once), or none.
+    Music(Option<(PathBuf, bool)>),
+    /// A one-shot sound at this volume (the effects' volume included).
+    Sfx(PathBuf, f32),
+    /// The music quieter (or not).
+    Duck(bool),
+}
+
+/// The sounds asked for, by game step.
+#[derive(Default)]
+pub struct Capture {
+    /// The game step now (the capturer counts them).
+    pub step: u64,
+    pub events: Vec<(u64, Event)>,
+}
+
 pub struct Audio {
-    sink: MixerDeviceSink,
+    /// The output device (none in capture).
+    sink: Option<MixerDeviceSink>,
+    /// Capturing instead of playing.
+    pub capture: Option<Capture>,
     music: Option<Player>,
     current: Option<PathBuf>,
     /// Decoded sound effects, kept for replay.
@@ -27,13 +52,18 @@ impl Audio {
         match rodio::DeviceSinkBuilder::open_default_sink() {
             Ok(mut sink) => {
                 sink.log_on_drop(false);
-                Some(Self { sink, music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9 })
+                Some(Self { sink: Some(sink), capture: None, music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9 })
             }
             Err(e) => {
                 log::warn!("no audio output: {e}");
                 None
             }
         }
+    }
+
+    /// No device: what the game asks to play is noted ([`Capture`]).
+    pub fn capture() -> Self {
+        Self { sink: None, capture: Some(Capture::default()), music: None, current: None, cache: HashMap::new(), muted: false, music_volume: 0.55, sfx_volume: 0.9 }
     }
 
     /// Play `path` as music, looped or once (nothing changes when it is already the current track, even when a
@@ -47,10 +77,14 @@ impl Audio {
             p.stop();
         }
         self.current = path.map(Path::to_path_buf);
-        let Some(path) = path else { return };
+        if let Some(c) = self.capture.as_mut() {
+            c.events.push((c.step, Event::Music(path.map(|p| (p.to_path_buf(), looped)))));
+            return;
+        }
+        let (Some(path), Some(sink)) = (path, self.sink.as_ref()) else { return };
         match File::open(path).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
             Ok(src) => {
-                let player = Player::connect_new(self.sink.mixer());
+                let player = Player::connect_new(sink.mixer());
                 player.set_volume(if self.muted { 0.0 } else { self.music_volume });
                 if looped {
                     player.append(src.repeat_infinite());
@@ -68,6 +102,11 @@ impl Audio {
         if self.muted {
             return;
         }
+        if let Some(c) = self.capture.as_mut() {
+            c.events.push((c.step, Event::Sfx(path.to_path_buf(), volume * self.sfx_volume)));
+            return;
+        }
+        let Some(sink) = self.sink.as_ref() else { return };
         let clip = match self.cache.get(path) {
             Some(c) => c.clone(),
             None => match File::open(path).map_err(anyhow::Error::from).and_then(|f| Decoder::try_from(f).map_err(anyhow::Error::from)) {
@@ -82,7 +121,7 @@ impl Audio {
                 }
             },
         };
-        self.sink.mixer().add(clip.amplify(volume * self.sfx_volume));
+        sink.mixer().add(clip.amplify(volume * self.sfx_volume));
     }
 
     pub fn toggle_mute(&mut self) -> bool {
@@ -95,6 +134,13 @@ impl Audio {
 
     /// Music quieter while paused.
     pub fn duck(&mut self, ducked: bool) {
+        // (the game says it every step: noted when it changes)
+        if let Some(c) = self.capture.as_mut() {
+            let was = c.events.iter().rev().find_map(|e| if let Event::Duck(d) = e.1 { Some(d) } else { None }).unwrap_or(false);
+            if was != ducked {
+                c.events.push((c.step, Event::Duck(ducked)));
+            }
+        }
         if let Some(p) = &self.music {
             p.set_volume(if self.muted {
                 0.0

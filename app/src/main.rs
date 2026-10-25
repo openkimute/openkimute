@@ -80,6 +80,10 @@ mod rumble_mac;
 mod save;
 mod tagrun;
 mod theater;
+#[cfg(not(target_arch = "wasm32"))]
+mod video;
+#[cfg(not(target_arch = "wasm32"))]
+mod video_export;
 
 use anyhow::{Context, Result};
 use art::Art;
@@ -445,6 +449,11 @@ struct App {
     replays: Option<replay_view::Browser>,
     /// Keys are the game's again from then (a system dialog closed with one).
     keys_after: Option<Instant>,
+    /// A replay to make a video of: its options being asked, and the export running (or just done).
+    #[cfg(not(target_arch = "wasm32"))]
+    video_dialog: Option<video_export::Dialog>,
+    #[cfg(not(target_arch = "wasm32"))]
+    video_export: Option<video_export::Export>,
     demo_out: Option<std::path::PathBuf>,
     demo_play: Option<demo::Playback>,
     /// Rewind buffer: the fight after each step (`--debug`), newest last; and the quick-saved fight.
@@ -1519,6 +1528,10 @@ impl App {
                     b.message = Some(said);
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(A::Video(e)) => self.video_dialog = Some(video_export::Dialog::new(*e, true, None)),
+            #[cfg(target_arch = "wasm32")]
+            Some(A::Video(_)) => {}
             Some(A::Import) => {
                 let opened = files::open(&files::REPLAY);
                 self.keys_after = Some(Instant::now() + Duration::from_millis(400));
@@ -1526,6 +1539,44 @@ impl App {
                     self.import_replays(opened);
                 }
             }
+            None => {}
+        }
+    }
+
+    /// The video's options answered (save it: where, then the export), and its panel's buttons.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn video_actions(&mut self, dialog: Option<video_export::DialogAction>, status: Option<video_export::StatusAction>) {
+        match dialog {
+            Some(video_export::DialogAction::Export) => {
+                let Some(d) = self.video_dialog.take() else { return };
+                if self.video_export.as_ref().is_some_and(video_export::Export::running) {
+                    self.debug.say("a video is being made: one at a time");
+                    return;
+                }
+                let name = replay::file_name(&d.entry.file).replace(".okreplay", ".mp4");
+                let out = files::save_path(&name, &files::VIDEO);
+                self.keys_after = Some(Instant::now() + Duration::from_millis(400));
+                let Some(out) = out else { return };
+                match video_export::Export::start(&d, out, &self.assets.root) {
+                    Ok(x) => self.video_export = Some(x),
+                    Err(e) => self.debug.say(format!("the video could not start: {e:#}")),
+                }
+            }
+            Some(video_export::DialogAction::Cancel) => self.video_dialog = None,
+            None => {}
+        }
+        match status {
+            Some(video_export::StatusAction::Cancel) => {
+                if let Some(mut x) = self.video_export.take() {
+                    x.cancel();
+                }
+            }
+            Some(video_export::StatusAction::Show) => {
+                if let Some(x) = self.video_export.as_ref() {
+                    x.show();
+                }
+            }
+            Some(video_export::StatusAction::Close) => self.video_export = None,
             None => {}
         }
     }
@@ -1619,6 +1670,15 @@ impl App {
                             Ok(()) => v.file.kept = kept,
                             Err(e) => log::warn!("keeping the replay: {e:#}"),
                         }
+                    }
+                }
+                replay_view::Request::Video =>
+                {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(v) = self.replay_view.as_ref() {
+                        self.debug.paused = true;
+                        let entry = replay::Entry { id: v.id.clone(), file: v.file.clone() };
+                        self.video_dialog = Some(video_export::Dialog::new(entry, v.hud, self.debug.free_cam));
                     }
                 }
                 replay_view::Request::Exit => {
@@ -3454,6 +3514,14 @@ impl App {
 
     /// A menu key on a menu screen or the pause menu.
     fn menu_key(&mut self, player: usize, key: Key) -> bool {
+        // the video's options: BACK closes them, the rest is the mouse's
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.video_dialog.is_some() {
+            if key == Key::Back {
+                self.video_dialog = None;
+            }
+            return true;
+        }
         // the replays' list over the main menu, and a replay playing, take the keys
         if let Some(b) = self.replays.as_mut() {
             let action = b.key(key);
@@ -3903,8 +3971,10 @@ impl App {
         let particles = effects_tex.as_deref().map(|texture| kumite_render::Particles { texture, alpha: &p_alpha, additive: &p_add, flat_alpha: &flat_alpha, flat_add: &flat_add });
         let t = Instant::now();
         let size = r.size();
-        // what the replays' list asked for (a click)
+        // what the replays' list asked for (a click), and the video's options and panel
         let mut browser_action = None;
+        #[cfg(not(target_arch = "wasm32"))]
+        let (mut dialog_action, mut status_action) = (None, None);
         let result = match self.egui.as_mut() {
             Some(egui) => {
                 if self.art.is_none() {
@@ -3921,6 +3991,8 @@ impl App {
                 let Some(art) = self.art.as_ref() else { return };
                 let (screen, fight) = (self.screen.as_ref(), self.fight.as_ref());
                 let (mut replays, mut replay_view) = (self.replays.as_mut(), self.replay_view.as_deref_mut().filter(|_| self.screen.is_none()));
+                #[cfg(not(target_arch = "wasm32"))]
+                let (mut video_dialog, mut video_export) = (self.video_dialog.as_mut(), self.video_export.as_mut());
                 let (paused, speed) = (debug.paused, debug.speed);
                 let force = self.force.as_ref().filter(|_| fight.is_some_and(|f| f.setup.as_ref().is_some_and(|s| s.mode == Mode::Force)));
                 let tag = self.tag.as_ref();
@@ -4027,6 +4099,15 @@ impl App {
                     if let Some(b) = replays.as_deref_mut() {
                         browser_action = b.ui(ctx);
                     }
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        if let Some(d) = video_dialog.as_deref_mut() {
+                            dialog_action = d.ui(ctx);
+                        }
+                        if let Some(x) = video_export.as_deref_mut() {
+                            status_action = x.ui(ctx);
+                        }
+                    }
                     if let Some(v) = &video {
                         debug.video_stats(ctx, v);
                     }
@@ -4085,6 +4166,8 @@ impl App {
         }
         self.apply_actions();
         self.browser_action(browser_action);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.video_actions(dialog_action, status_action);
         // (a browser's picker: the replay files it has read)
         let opened = files::take_opened();
         if !opened.is_empty() {
@@ -4212,6 +4295,7 @@ impl App {
             },
             KeyCode::KeyC if !repeat => R::FreeCam,
             KeyCode::KeyK if !repeat => R::Keep(!v.file.kept),
+            KeyCode::KeyV if !repeat => R::Video,
             KeyCode::KeyH if !repeat => {
                 v.hud = !v.hud;
                 return true;
@@ -5294,6 +5378,65 @@ impl App {
     }
 }
 
+/// `--export-video ID|latest --out FILE.mp4 [--size WxH] [--no-hud] [--free-cam YAW,PITCH,DIST,X,Y,Z]`: the replay
+/// made a video, off-screen, a frame each game step (and a second more on its last), its sounds mixed (video.rs).
+/// Prints `PROGRESS done total` as it goes (the game shows it), then `DONE`.
+#[cfg(not(target_arch = "wasm32"))]
+fn export_video(app: &mut App, id: &str, out: &Path, (width, height): (u32, u32), hud: bool, free_cam: Option<debug::FreeCam>) -> Result<()> {
+    use std::io::Write;
+    let entry = replay::list().into_iter().find(|e| e.id == id || id == "latest").with_context(|| format!("no replay {id}"))?;
+    let total = entry.file.steps;
+    let mut r = Renderer::headless(width, height)?;
+    // (the picture at the video's size: the 3D at 1x, whatever the window's scale)
+    r.set_settings(kumite_render::RenderSettings { scale: 1.0, ..app.graphics.render() });
+    app.egui = Some(EguiLayer::new(r.device(), r.overlay_format(), None));
+    app.audio = Some(audio::Audio::capture());
+    app.renderer = Some(r);
+    app.play_replay(entry);
+    let v = app.replay_view.as_mut().context("the replay did not load (its game data, or its files)")?;
+    (v.hud, v.bar) = (hud, false);
+    app.debug.free_cam = free_cam;
+    let mut writer = video::Writer::new(out, width, height)?;
+    let all = total + video::FPS;
+    // the progress: frames encoded (the rendering runs ahead of them), a few times a second until the end
+    let (encoded, stop) = (writer.encoded(), Arc::new(std::sync::atomic::AtomicBool::new(false)));
+    let reporter = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut stdout = std::io::stdout();
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = writeln!(stdout, "PROGRESS {} {all}", encoded.load(std::sync::atomic::Ordering::Relaxed));
+                let _ = stdout.flush();
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        })
+    };
+    for step in 0..all {
+        if step < total {
+            if let Some(c) = app.audio.as_mut().and_then(|a| a.capture.as_mut()) {
+                c.step = step;
+            }
+            app.step();
+        }
+        // (no message on the picture: this process's own, such as the save being another window's)
+        app.debug.hush();
+        app.draw();
+        let img = app.renderer.as_ref().context("renderer")?.capture()?;
+        writer.frame(&img.rgba)?;
+    }
+    let (events, music) = app.audio.as_ref().map_or((Vec::new(), 0.55), |a| (a.capture.as_ref().map_or_else(Vec::new, |c| c.events.clone()), a.music_volume));
+    let finished = writer.finish(&video::mix(&events, all, music));
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = reporter.join();
+    finished?;
+    let mut stdout = std::io::stdout();
+    let sounds = events.iter().filter(|e| matches!(e.1, audio::Event::Sfx(..))).count();
+    let tracks = events.iter().filter(|e| matches!(e.1, audio::Event::Music(_))).count();
+    log::info!("{}: {all} frames ({}), {sounds} sounds, {tracks} music changes", out.display(), replay::duration(all));
+    let _ = writeln!(stdout, "DONE");
+    Ok(())
+}
+
 /// `--shot out.png [--frames N] [--p1 script] [--draw ...] [--ui] [--screen
 /// title|menu|options|select|vs|practice|hud]`: run headless and save a PNG. `--screen hud` plays an arcade match (P1
 /// by script, P2 the CPU) for N frames.
@@ -6083,6 +6226,10 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
         replay_counters_before: None,
         replays: None,
         keys_after: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        video_dialog: None,
+        #[cfg(not(target_arch = "wasm32"))]
+        video_export: None,
         demo_out: None,
         demo_play: None,
         history: Default::default(),
@@ -6161,6 +6308,13 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
     if !sandbox && arg("--arcade").is_none() && arg("--shot").is_none() && app.pending_launch.is_none() && arg("--online").is_none() && !flag("--host") && !flag("--join") && arg("--screen").is_none()
     {
         app.request_title();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(id) = arg("--export-video") {
+        let out = arg("--out").context("--export-video ID --out FILE.mp4")?;
+        let size = arg("--size").map_or(Ok((1920, 1080)), |s| s.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?))).context("--size WIDTHxHEIGHT"))?;
+        let free_cam = app.debug.free_cam;
+        return export_video(&mut app, &id, Path::new(&out), size, !flag("--no-hud"), free_cam);
     }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(path) = arg("--shot") {

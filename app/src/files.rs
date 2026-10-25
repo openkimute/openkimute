@@ -11,6 +11,8 @@ pub struct Kind {
 }
 
 pub const REPLAY: Kind = Kind { name: "OpenKumite replay", ext: "okreplay" };
+#[cfg(not(target_arch = "wasm32"))]
+pub const VIDEO: Kind = Kind { name: "MP4 video", ext: "mp4" };
 
 /// Where the player wants a new file `name` of `kind` (None: cancelled). Native only: a browser downloads.
 #[cfg(not(target_arch = "wasm32"))]

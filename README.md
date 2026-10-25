@@ -136,7 +136,8 @@ levels; online ones too) is recorded and saved as a replay when it ends. The gam
 the match's setup and every step's inputs: a couple of KB a match. The newest 50 are kept (15 in a browser), plus any
 marked kept. Natively they are files in `replays/` in the save folder; in a browser, the page's storage.
 
-**REPLAYS** on the main menu lists them: START plays one, button 1 keeps it, button 2 (twice) deletes it. While one
+**REPLAYS** on the main menu lists them: START plays one, button 1 keeps it, button 2 (twice) deletes it, button 3
+exports it, button 4 imports. While one
 plays:
 
 | Key | Pad | |
@@ -151,7 +152,22 @@ plays:
 | H | button 3 | the HUD on / off |
 | I | button 4 | each player's inputs, in numpad notation |
 | K | | keep |
+| V | | make a video |
 | Esc | BACK | back to the list |
+
+**Sharing.** **Export…** saves a replay as an `.okreplay` file (a couple of KB) to send to anyone; **Import…** (or
+dropping the file on the game's window) adds one, kept. In a browser, Export downloads the file and Import opens the
+browser's file picker. The match is computed the same everywhere, so a replay plays the same on another computer: checked
+so far from macOS to the browser build (it plays to the same end state), not yet between Windows and Linux.
+
+**Video.** **Video…** (in the list or while one plays; native builds) makes an MP4 of a replay: 720p, 1080p, 1440p or
+4K, with or without the HUD, from the game's camera or the free camera where it is. It is rendered off-screen at 60
+frames a second whatever the computer, its sounds and music mixed from the game's own, and encoded inside the game
+(AV1 video by rav1e, Opus audio): nothing to install, and the game plays on meanwhile (the export runs in a process of
+its own, its progress and Cancel at the top left). The encoding takes its time: on an M1 Pro about 1.5x the replay's
+length at 720p and 3x at 1080p, longer at 4K. AV1 plays in current browsers, VLC and recent phones and TVs; some
+older devices do not play it. From the command line: `openkumite --export-video ID|latest --out FILE.mp4 [--size
+1920x1080] [--no-hud] [--free-cam YAW,PITCH,DIST,X,Y,Z]`.
 
 A replay plays only on the game data it was recorded on. Before it plays it is run through once (copies kept for
 seeking), and its end is checked against the state recorded: the viewer says **verified**, or that it differs; played

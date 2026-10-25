@@ -480,6 +480,12 @@ impl Debug {
         });
     }
 
+    /// No message shown (a video's frames).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn hush(&mut self) {
+        self.message = None;
+    }
+
     pub fn toasts(&self, ctx: &egui::Context) {
         if let Some((text, shown)) = &self.message {
             let at = shown.get().unwrap_or_else(Instant::now);

@@ -25,6 +25,8 @@ pub enum Request {
     Speed(f32),
     FreeCam,
     Keep(bool),
+    /// Make it a video (native).
+    Video,
     Exit,
 }
 
@@ -40,6 +42,8 @@ pub struct View {
     pub verified: bool,
     pub hud: bool,
     pub inputs: bool,
+    /// The controls shown (not in a video).
+    pub bar: bool,
     /// The camera counters before the replay (put back after it).
     pub counters_before: [usize; 3],
     /// Played to its last step (since the last seek back), and whether it ended there as recorded.
@@ -70,7 +74,7 @@ impl View {
         if !verified {
             log::warn!("replay {}: the run-through ended in another state than recorded", entry.id);
         }
-        Self { id: entry.id, file: entry.file, total, snapshots, rounds, verified, hud: true, inputs: false, counters_before, ended: false, watched_ok: None, requests: Vec::new() }
+        Self { id: entry.id, file: entry.file, total, snapshots, rounds, verified, hud: true, inputs: false, bar: true, counters_before, ended: false, watched_ok: None, requests: Vec::new() }
     }
 
     /// The copy a seek to `step` starts from.
@@ -80,6 +84,9 @@ impl View {
 
     /// The bar at the bottom: what plays, the controls, the timeline; each player's inputs at the sides.
     pub fn ui(&mut self, ctx: &egui::Context, bout: &Bout, paused: bool, speed: f32, free_cam: bool) {
+        if !self.bar {
+            return;
+        }
         let at = bout.played().min(self.total);
         let mut req = Vec::new();
         egui::Area::new(egui::Id::new("replay_bar")).anchor(Align2::CENTER_BOTTOM, [0.0, -14.0]).show(ctx, |ui| {
@@ -174,6 +181,9 @@ impl View {
                     if toggle(ui, self.file.kept, "★ Keep", "Keep this replay: it is never deleted to make room (K)") {
                         req.push(Request::Keep(!self.file.kept));
                     }
+                    if cfg!(not(target_arch = "wasm32")) && ui.button("Video…").on_hover_text("Make it an MP4 video (V)").clicked() {
+                        req.push(Request::Video);
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.button("Exit").on_hover_text("Back to the replays (Esc)").clicked() {
                             req.push(Request::Exit);
@@ -218,6 +228,8 @@ pub enum BrowserAction {
     Export(Box<Entry>),
     /// Open replay files someone shared.
     Import,
+    /// Make it a video (native).
+    Video(#[cfg_attr(target_arch = "wasm32", allow(dead_code))] Box<Entry>),
     Close,
 }
 
@@ -361,6 +373,10 @@ impl Browser {
                     }
                     if ui.button("Import…").on_hover_text("Open replay files someone shared, or drop them on the window (button 4)").clicked() {
                         action = Some(BrowserAction::Import);
+                    }
+                    let playable = self.entries.get(self.cursor).is_some_and(|e| self.playable(e));
+                    if cfg!(not(target_arch = "wasm32")) && ui.add_enabled(playable, egui::Button::new("Video…")).on_hover_text("Make it an MP4 video").clicked() {
+                        action = self.entries.get(self.cursor).map(|e| BrowserAction::Video(Box::new(e.clone())));
                     }
                     if ui.add_enabled(has, egui::Button::new("Delete")).on_hover_text("Button 2, twice").clicked() {
                         self.delete(self.cursor);
