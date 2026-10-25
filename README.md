@@ -76,8 +76,6 @@ openkumite --keys "30:start,60:b1,400:shot" --quit-after 600   # scripted run
 openkumite --replay latest --shot out.png --frames 600 --keys "400:right"   # a replay, seeking 5 s on at step 400
 ```
 
-With `--replay`, `--shot` logs where the replay is at its end: the step, the match's state hash and the HUD's state.
-
 Headless example tools live in `crates/kumite_game/examples/` (`cpu_match`, `trace`, `ko_trace`, ...).
 
 ## Browser build
@@ -175,9 +173,7 @@ older devices do not play it. From the command line: `openkumite --export-video 
 
 A replay plays only on the game data it was recorded on. Before it plays it is run through once (copies kept for
 seeking), and its end is checked against the state recorded: the viewer says **verified**, or that it differs; played
-to its end, it is checked again. A seek starts from the copy before the step and plays on to it; the copies keep the
-HUD (the health bars, the arcade run's time, the K.O. text) and the sounds the match's own K.O. replay plays, so after
-a seek everything shows as if the replay had played straight there (only effects in flight, like sparks, are gone). Online, each computer saves its own replay; the last frames, past the match's end,
+to its end, it is checked again. Online, each computer saves its own replay; the last frames, past the match's end,
 may hold the other player's predicted inputs (the result is the same on both). `--replay ID|latest` plays one from the
 command line.
 
@@ -216,9 +212,7 @@ sh check.sh all 60   # the above and every fuzz target for 60 s each
 
 The git hooks (`.cargo-husky/hooks`) run `commit` and `push`. Tests read the converted assets from
 `OPENKUMITE_ASSETS` (default `assets/`); the ones that need them skip when they are missing or an older conversion
-(CI has none). The integration tests in `app/tests/` run the game's binary headless (`--shot`) and need a GPU too:
-`replay_seek.rs` records a real match, seeks in its replay and compares the state, the HUD and the picture with
-playing straight. The wasm lint needs `rustup target add wasm32-unknown-unknown`;
+(CI has none). The integration tests in `app/tests/` run the game's binary headless and need a GPU too. The wasm lint needs `rustup target add wasm32-unknown-unknown`;
 fuzzing needs nightly and `cargo-fuzz`.
 
 Code rules (workspace lints): no `unsafe` (except the macOS haptics FFI), and no `unwrap` / `expect` / `panic!` on
