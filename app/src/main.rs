@@ -453,6 +453,9 @@ struct App {
     /// Testing: the round's clock (seconds) and the rounds to win, for every fight.
     round_time: Option<u32>,
     rounds: Option<u32>,
+    /// `--ai`: the seats the AI plays offline (1P..4P), every match (shortcut: one started from the menus too,
+    /// for the program's run; a demo or test starts with `--mode`).
+    ai_seats: [Option<replay::AiSeat>; 4],
     hash_steps: u64,
     hash_detail: bool,
     /// Online play (rollback over UDP; the sync test): the fight's frames come from its session.
@@ -681,6 +684,20 @@ impl App {
             }
             bout.interlude_check = p.interlude_check;
         }
+        // the AI's seats (`--ai`, or the replay's): 1P, 2P, Ball 2 ON 2's partners (3P beside 1P, 4P beside 2P)
+        if !matches!(setup.as_ref().map(|s| s.mode), None | Some(Mode::Watch | Mode::Practice)) {
+            let seats = self.ai_seats();
+            for (k, a) in seats.iter().take(2).enumerate() {
+                if let Some(a) = a {
+                    bout.set_cpu(k, Some((a.difficulty, a.level)));
+                    bout.cpu[k] = Some(a.ai(k));
+                }
+            }
+            if setup.as_ref().is_some_and(|s| s.partners.is_some()) {
+                bout.partner_cpu = seats[2].map(|a| a.ai(0)).or(bout.partner_cpu.take());
+                bout.extra_cpu = seats[3].map(|a| a.ai(1)).or(bout.extra_cpu.take());
+            }
+        }
         // every match of a mode with rounds is recorded (its inputs on the bout's tape), saved as a replay at its end
         let recordable = matches!(setup.as_ref().map(|s| s.mode), Some(Mode::Arcade | Mode::Versus | Mode::TeamBattle | Mode::TimeAttack | Mode::Survival | Mode::Ball | Mode::ExtraLevels));
         self.replay_rec = None;
@@ -810,6 +827,15 @@ impl App {
     fn spoil_replay(&mut self, why: &str) {
         if self.replay_rec.take().is_some() {
             log::info!("this match is not saved as a replay: {why}");
+        }
+    }
+
+    /// The AI's seats of the match loading: a replay's, or `--ai`'s (offline).
+    fn ai_seats(&self) -> [Option<replay::AiSeat>; 4] {
+        match &self.replay_next {
+            Some(next) => next.0.file.ai,
+            None if self.room.is_none() && self.net.is_none() => self.ai_seats,
+            None => [None; 4],
         }
     }
 
@@ -1725,6 +1751,7 @@ impl App {
             steps: inputs.len() as u64,
             hash: self.match_hash(),
             inputs: replay::encode(&inputs),
+            ai: if rec.online { [None; 4] } else { self.ai_seats },
         };
         match replay::save(&file) {
             Ok(id) => log::info!("replay {id} saved: {} ({} steps)", file.title, file.steps),
@@ -2749,6 +2776,18 @@ impl App {
             a.music(None);
         }
         (self.fight, self.tag, self.force, self.run, self.scene, self.embu, self.screen) = (None, None, None, None, None, None, None);
+        // the AI's seats (`random`: a style from the game's seed, as the menus draw)
+        for k in 0..4 {
+            self.ai_seats[k] = spec.ai[k].then(|| {
+                let style = spec.ai_style[k].unwrap_or_else(|| {
+                    self.seed = self.seed.wrapping_mul(0x41C6_4E6D).wrapping_add(12345);
+                    let all = kumite_sim::ai::Style::ALL;
+                    all[((self.seed >> 16) & 0x7FFF) as usize % all.len()]
+                });
+                replay::AiSeat { style, difficulty: spec.ai_difficulty, level: spec.ai_level }
+            });
+        }
+        log::info!("--ai: {:?}", self.ai_seats);
         let fight = |mode: Mode, stage: usize, ball| FightSetup {
             mode,
             players: [p1, p2],
@@ -2782,11 +2821,11 @@ impl App {
                     _ => Mode::Ball,
                 };
                 let ball = (mode == Mode::Ball).then_some((0, 0));
-                self.ball_cpu = [false, spec.p2_cpu];
+                self.ball_cpu = [spec.ai[0], spec.p2_cpu || spec.ai[1]];
                 // Ball 2 ON 2: --fighters A,B,C,D (C beside A, D beside B)
                 if mode == Mode::Ball && spec.given[2] && spec.given[3] {
                     let mut setup = fight(mode, roster.ball_stage, ball);
-                    let seats = [Some(0), (!spec.p2_cpu).then_some(1), None, None];
+                    let seats = [(!self.ball_cpu[0]).then_some(0), (!self.ball_cpu[1]).then_some(1), None, None];
                     setup.partners = Some(menu::Doubles { partners: [p3, p4], seats });
                     self.load_fight(setup, Vec::new());
                     return;
@@ -2896,6 +2935,7 @@ impl App {
                         (slots[k].character, slots[k].costume) = p;
                     }
                     slots[k].player = match k {
+                        _ if spec.ai[k] => None,
                         0 => Some(0),
                         1 if !spec.p2_cpu => Some(1),
                         _ => None,
@@ -3249,6 +3289,7 @@ impl App {
     /// Load a Force stage (0x8002A508): the player, the stage's two soldier kinds in the two enemy slots
     /// (out of play until spawned), the stage logic; the final stage brings its character in at once.
     fn load_force(&mut self, r: &Renderer, setup: FightSetup) -> Result<()> {
+        let seats = self.ai_seats();
         let run = self.force.as_mut().context("no Force run")?;
         // (the run as this stage begins: a replay of the stage starts from it)
         let start = run.start();
@@ -3270,6 +3311,12 @@ impl App {
         let level = data.ai_level(i);
         bout.set_cpu(1, Some((setup.difficulty, level)));
         bout.extra_cpu = Some(kumite_sim::ai::Ai::new(setup.difficulty, level, 1));
+        // the AI's seats: the player, the co-op partner
+        if let Some(a) = seats[0] {
+            bout.set_cpu(0, Some((a.difficulty, a.level)));
+            bout.cpu[0] = Some(a.ai(0));
+        }
+        bout.partner_cpu = seats[1].map(|a| a.ai(0));
         let mut st = kumite_game::force::ForceStage::new(data.clone(), i, soldiers, run.selection, run.player_char, run.keys, run.score, run.hiscore, run.kills);
         if let Some(e) = run.extra {
             st = st.extra_stage(e);
@@ -3436,6 +3483,10 @@ impl App {
         match kumite_game::Actor::load(&self.assets, model) {
             Ok(actor) => {
                 fight.bout.game.join_partner(&actor);
+                // (an AI partner guards with guard moves, as a CPU does)
+                if let (Some(_), Some(p)) = (fight.bout.partner_cpu.as_ref(), fight.bout.game.fight.partner.as_mut()) {
+                    p.guard_input = false;
+                }
                 if let Some(st) = run.stage.as_mut() {
                     st.widen(&mut fight.bout.game);
                 }
@@ -3625,9 +3676,16 @@ impl App {
         let Some(r) = self.renderer.take() else { return };
         let level = tagrun::TagRun::cpu_level(setup.difficulty);
         let picks = setup.match_slots();
-        let slots = picks.map(|s| kumite_game::tag::Slot { record: model(&s), cpu: s.player.is_none().then_some(level) });
+        // (the AI's seats: their own level, then their style)
+        let seats = self.ai_seats();
+        let slots: [_; 4] = std::array::from_fn(|k| kumite_game::tag::Slot { record: model(&picks[k]), cpu: seats[k].map(|a| (a.difficulty, a.level)).or(picks[k].player.is_none().then_some(level)) });
         match kumite_game::tag::TagGame::load(&self.assets, slots, setup.mode.teams(), self.ai.clone(), self.roster.modes.rounds_to_win) {
-            Ok(game) => {
+            Ok(mut game) => {
+                for (k, a) in seats.iter().enumerate() {
+                    if let Some(a) = a {
+                        game.cpu[k] = Some(a.ai(usize::from(k >= 2)));
+                    }
+                }
                 let home = &picks[2];
                 // (`--stage N` with `--screen tag`: a test's stage)
                 let stage = self.tag_stage.unwrap_or_else(|| roster.home_stage(roster.characters[home.character].id, home.costume));
@@ -3640,7 +3698,6 @@ impl App {
                     audio.music(roster.music_of(c.id, home.costume).and_then(|b| sound.music(b)).or_else(|| sound.music_for(&c.name)));
                 }
                 // every brawl is recorded (its inputs on the game's tape), saved as a replay at its end; or a replay plays
-                let mut game = game;
                 self.replay_rec = None;
                 if self.replay_next.is_none() {
                     game.tape = Some(Default::default());
@@ -6282,6 +6339,11 @@ Straight into a mode (debugging; past the menus):
   --boss                       ... straight to the boss
   --coop                       ... with 2P (--opponent, or the player's next costume)
   --force-keys N               ... the keys held (all of them at the last stage earn the final stage)
+  --ai SEATS                   the AI plays these seats (1,2; 1..4 in the tag brawl and Ball 2 ON 2; Force: 1,
+                               2 with --coop); offline only; the save is not written
+  --ai-style S | 1:S,2:S       classic, rushdown, defensive, counter, thrower, evasive, juggler, mixed, or random
+  --ai-difficulty D            easy|medium|hard (default hard)
+  --ai-level N                 0..9 (default 9)
 
 Sandbox (straight into a free fight):
   --fight                      a free fight
@@ -6490,7 +6552,8 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
         }
     }
     let hud = Hud::new(hud_data);
-    if arg("--shot").is_some() {
+    // (and the AI's matches: what it wins is not the player's)
+    if arg("--shot").is_some() || flag("--ai") {
         save::set_read_only();
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -6537,6 +6600,7 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
         online_back: None,
         hash_every: None,
         round_time: None,
+        ai_seats: [None; 4],
         stage_lights: stage_lights(&gd),
         rounds: None,
         hash_steps: 0,

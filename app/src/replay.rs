@@ -8,11 +8,12 @@
 
 use crate::menu::FightSetup;
 use kumite_game::bout::StepInput;
+use kumite_sim::ai::{Ai, Style};
 use kumite_sim::input::Pad;
 use serde::{Deserialize, Serialize};
 
-/// (2: the tag brawl and Force too, the match's kind in `game`)
-pub const VERSION: u32 = 2;
+/// (2: the tag brawl and Force too, the match's kind in `game`; 3: the AI seats, `ai`. A 2 plays as one without)
+pub const VERSION: u32 = 3;
 /// The newest replays kept (natively; a browser's storage keeps fewer).
 pub const KEEP: usize = if cfg!(target_arch = "wasm32") { 15 } else { 50 };
 /// The longest match a replay holds (an hour): a longer one is a damaged file.
@@ -33,6 +34,21 @@ pub struct MatchParams {
     pub interlude_check: bool,
     /// The camera counters as the match began (`kumite_game::bout::counters`).
     pub counters: [usize; 3],
+}
+
+/// A seat the AI plays (`--ai`, OpenKumite's own): its style, difficulty 0..2 and level 0..9.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiSeat {
+    pub style: Style,
+    pub difficulty: usize,
+    pub level: usize,
+}
+
+impl AiSeat {
+    /// Its CPU, in actor slot `slot`.
+    pub fn ai(self, slot: usize) -> Ai {
+        Ai::new(self.difficulty, self.level, slot).with_style(self.style)
+    }
 }
 
 /// What a match is made from, by its kind.
@@ -70,12 +86,15 @@ pub struct ReplayFile {
     pub hash: u64,
     /// The inputs, run-length coded: (steps, the input's bits low, high).
     pub inputs: Vec<(u32, u64, u64)>,
+    /// The seats the AI played (1P..4P; `--ai`), on top of the mode's own CPUs.
+    #[serde(default)]
+    pub ai: [Option<AiSeat>; 4],
 }
 
 impl ReplayFile {
     /// Whether it plays on this game data (its fingerprint; none known: any): of this format, recorded on it.
     pub fn plays_on(&self, data: &str) -> bool {
-        self.version == VERSION && (data.is_empty() || self.data == data)
+        (2..=VERSION).contains(&self.version) && (data.is_empty() || self.data == data)
     }
 
     /// Whether its inputs are as many steps as it says, at least one and no more than a replay can be (what they
@@ -91,6 +110,7 @@ impl ReplayFile {
         use crate::room::MatchSetup;
         let pick = |(c, costume): (usize, usize)| roster.characters.get(c).is_some_and(|ch| costume < ch.costumes.len());
         self.length_ok()
+            && self.ai.iter().flatten().all(|a| a.difficulty <= 2 && a.level <= 9)
             && match &self.game {
                 Match::Fight { setup, .. } => MatchSetup::Fight(setup.clone()).numbers_valid(roster),
                 Match::Tag { setup, .. } => MatchSetup::Tag(setup.clone()).numbers_valid(roster),
@@ -238,7 +258,7 @@ fn civil(days: u64) -> (i64, u32, u32) {
 pub fn import(bytes: &[u8]) -> anyhow::Result<String> {
     use anyhow::Context;
     let mut file: ReplayFile = serde_json::from_slice(bytes).context("this is not an OpenKumite replay file")?;
-    anyhow::ensure!(file.version == VERSION, "this replay is of another OpenKumite version (its format {}, this one plays {VERSION})", file.version);
+    anyhow::ensure!((2..=VERSION).contains(&file.version), "this replay is of another OpenKumite version (its format {}, this one plays {VERSION})", file.version);
     anyhow::ensure!(file.length_ok(), "this replay file is damaged");
     if let Some(e) = list().into_iter().find(|e| e.file.recorded == file.recorded && e.file.hash == file.hash && e.file.inputs == file.inputs) {
         return Ok(e.id);
@@ -406,7 +426,8 @@ mod tests {
         };
         good.game = Match::Force { setup, start, joins: vec![(10, 1), (20, 2)] };
         assert!(good.sane(&roster));
-        let damage: [fn(&mut ReplayFile); 6] = [
+        good.ai[0] = Some(AiSeat { style: Style::Thrower, difficulty: 2, level: 9 });
+        let damage: [fn(&mut ReplayFile); 8] = [
             |f| f.steps = 2,
             |f| f.inputs = vec![(u32::MAX, 0, 0); 2],
             |f| {
@@ -429,6 +450,8 @@ mod tests {
                     setup.players[1] = (999, 0)
                 }
             },
+            |f| f.ai[3] = Some(AiSeat { style: Style::Classic, difficulty: 3, level: 0 }),
+            |f| f.ai[0] = Some(AiSeat { style: Style::Classic, difficulty: 0, level: 10 }),
         ];
         for (k, d) in damage.iter().enumerate() {
             let mut f = good.clone();
@@ -506,7 +529,25 @@ mod tests {
             steps: 1,
             hash: 0,
             inputs: encode(&[StepInput::default()]),
+            ai: [None; 4],
         }
+    }
+
+    /// The AI's seats go with the replay; one of format 2, from before them, reads and plays without.
+    #[test]
+    fn the_ai_seats_are_kept_and_an_older_file_still_plays() {
+        let mut f = file(3);
+        f.ai[1] = Some(AiSeat { style: Style::Rushdown, difficulty: 1, level: 4 });
+        let back: ReplayFile = serde_json::from_slice(&to_bytes(&f).unwrap()).unwrap();
+        assert_eq!(back.ai, f.ai);
+        let mut old = serde_json::to_value(file(3)).unwrap();
+        old["version"] = 2.into();
+        old.as_object_mut().unwrap().remove("ai");
+        let mut old: ReplayFile = serde_json::from_value(old).unwrap();
+        assert_eq!(old.ai, [None; 4]);
+        assert!(old.plays_on("d"));
+        old.version = VERSION + 1;
+        assert!(!old.plays_on("d"));
     }
 
     #[test]

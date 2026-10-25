@@ -414,7 +414,7 @@ impl Bout {
         // the heads follow the opponent only while the round is on (round state 2), and not Force's
         // CPU soldiers
         self.game.head_live = self.phase == Phase::Fight;
-        self.game.head_off = std::array::from_fn(|i| self.force && self.cpu[i].is_some());
+        self.game.head_off = std::array::from_fn(|i| self.force && i == 1 && self.cpu[i].is_some());
         self.game.partner_pad = if self.phase == Phase::Fight { self.partner_pad } else { Pad::default() };
         if let (Some(pad), None) = (self.extra_human, self.extra_cpu.as_ref()) {
             self.game.extra_pad = if self.phase == Phase::Fight { pad } else { Pad::default() };

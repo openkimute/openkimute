@@ -8,9 +8,14 @@
 //! --mode arcade --player 0 --costume 2 --opponent 14 --level 10 --difficulty hard
 //! --mode tag-free --fighters NAME,ID,PREFIX:NAME,ID:2 --stage ID
 //! ```
+//!
+//! `--ai SEATS` (1,2; 1,2,3,4 in the four's modes) has the AI play those seats, `--ai-style STYLE` or
+//! `--ai-style 1:STYLE,2:STYLE` how (`random`: one a seat from the game's seed), `--ai-difficulty easy|medium|hard`
+//! and `--ai-level 0..9` how well. Offline only.
 
 use crate::menu::Roster;
 use anyhow::{bail, Context, Result};
+use kumite_sim::ai::Style;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LaunchMode {
@@ -65,6 +70,37 @@ pub struct LaunchSpec {
     pub force_boss: bool,
     pub force_coop: bool,
     pub force_keys: u32,
+    /// `--ai`: the seats the AI plays (1P..4P), each its style (None: `random`, from the game's seed).
+    pub ai: [bool; 4],
+    pub ai_style: [Option<Style>; 4],
+    pub ai_difficulty: usize,
+    pub ai_level: usize,
+}
+
+impl LaunchMode {
+    /// The seats an AI can play (`--ai`): 1P and 2P; the four of the tag brawl and Ball 2 ON 2 (3P beside 1P, 4P
+    /// beside 2P); Force's player and its co-op partner (shortcut: not 3P and 4P, who join with START on the way;
+    /// if a demo needs them, join them at the stage's start). Practice: none (its dummy is the practice's own).
+    fn ai_seats(self, doubles: bool, coop: bool) -> usize {
+        match self {
+            LaunchMode::Practice => 0,
+            LaunchMode::Force => 1 + usize::from(coop),
+            LaunchMode::TagFree | LaunchMode::TagTeams | LaunchMode::TagArcade => 4,
+            LaunchMode::Ball if doubles => 4,
+            _ => 2,
+        }
+    }
+}
+
+/// A difficulty flag's value: easy, medium or hard (0..2).
+fn difficulty_of(name: &str, d: Option<&str>, default: usize) -> Result<usize> {
+    Ok(match d {
+        None => default,
+        Some("easy") | Some("0") => 0,
+        Some("medium") | Some("1") => 1,
+        Some("hard") | Some("2") => 2,
+        Some(d) => bail!("{name} {d}: easy, medium or hard (0..2)"),
+    })
 }
 
 /// A character by id, or by name (case, spaces, dots and dashes aside; one without a prefix before one of the
@@ -94,7 +130,15 @@ pub fn fighter(roster: &Roster, spec: &str) -> Result<(usize, usize)> {
 pub fn from_args(args: &[String], roster: &Roster) -> Result<Option<LaunchSpec>> {
     let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
     let flag = |name: &str| args.iter().any(|a| a == name);
-    let Some(m) = arg("--mode") else { return Ok(None) };
+    if flag("--ai") && (flag("--online") || flag("--host") || flag("--join")) {
+        bail!("--ai plays offline only: not with --online, --host or --join");
+    }
+    let Some(m) = arg("--mode") else {
+        if flag("--ai") {
+            bail!("--ai needs --mode");
+        }
+        return Ok(None);
+    };
     let names: Vec<&str> = LaunchMode::NAMES.iter().map(|n| n.0).collect();
     let mode = LaunchMode::NAMES.iter().find(|n| n.0 == m).map(|n| n.1).with_context(|| format!("--mode {m}: one of {}", names.join(", ")))?;
     let mut players = [(0, 0), (1, 0), (2, 0), (3, 0)];
@@ -116,13 +160,7 @@ pub fn from_args(args: &[String], roster: &Roster) -> Result<Option<LaunchSpec>>
             players[k].1 = c.clamp(1, n) - 1;
         }
     }
-    let difficulty = match arg("--difficulty").as_deref() {
-        None => 1,
-        Some("easy") | Some("0") => 0,
-        Some("medium") | Some("1") => 1,
-        Some("hard") | Some("2") => 2,
-        Some(d) => bail!("--difficulty {d}: easy, medium or hard (0..2)"),
-    };
+    let difficulty = difficulty_of("--difficulty", arg("--difficulty").as_deref(), 1)?;
     let level = match arg("--level") {
         Some(l) => {
             let n: usize = l.parse().context("--level N")?;
@@ -144,8 +182,39 @@ pub fn from_args(args: &[String], roster: &Roster) -> Result<Option<LaunchSpec>>
             _ => bail!("--force-stage {n}: 1.. or final"),
         },
     };
+    // the AI's seats, their styles (one for all, or SEAT:STYLE each), how well they play
+    let mut ai = [false; 4];
+    let seats = mode.ai_seats(given[2] && given[3], flag("--coop"));
+    for s in arg("--ai").iter().flat_map(|l| l.split(',')) {
+        match s.trim().parse::<usize>() {
+            Ok(k @ 1..=4) if k <= seats => ai[k - 1] = true,
+            Ok(k @ 1..=4) if seats == 0 => bail!("--ai {k}: --mode {m} has no seats the AI can play"),
+            Ok(k @ 1..=4) => bail!("--ai {k}: --mode {m} has seats 1..{seats}"),
+            _ => bail!("--ai {s}: seats 1..4, as a comma list (--ai 1,2)"),
+        }
+    }
+    let style = |s: &str| match s.trim() {
+        "random" => Ok(None),
+        s => Style::parse(s).map(Some).with_context(|| format!("--ai-style {s}: {}, or random", Style::ALL.map(Style::name).join(", "))),
+    };
+    let mut ai_style = [Some(Style::Classic); 4];
+    match arg("--ai-style") {
+        Some(l) if l.contains(':') => {
+            for each in l.split(',') {
+                let (k, s) = each.split_once(':').with_context(|| format!("--ai-style {each}: SEAT:STYLE"))?;
+                let k = k.trim().parse::<usize>().ok().filter(|k| (1..=4).contains(k) && ai[k - 1]).with_context(|| format!("--ai-style {each}: seat {k} is not one of --ai's"))?;
+                ai_style[k - 1] = style(s)?;
+            }
+        }
+        Some(s) => ai_style = [style(&s)?; 4],
+        None => {}
+    }
+    let ai_level = match arg("--ai-level") {
+        Some(l) => l.parse().ok().filter(|l| *l <= 9).with_context(|| format!("--ai-level {l}: 0..9"))?,
+        None => 9,
+    };
     let p2_cpu = match mode {
-        LaunchMode::Versus => flag("--p2-cpu"),
+        LaunchMode::Versus => flag("--p2-cpu") && !ai[1],
         LaunchMode::TagArcade => flag("--p2-cpu"),
         _ => !flag("--p2-human"),
     };
@@ -161,6 +230,10 @@ pub fn from_args(args: &[String], roster: &Roster) -> Result<Option<LaunchSpec>>
         force_boss: flag("--boss"),
         force_coop: flag("--coop"),
         force_keys: arg("--force-keys").and_then(|k| k.parse().ok()).unwrap_or(0),
+        ai,
+        ai_style,
+        ai_difficulty: difficulty_of("--ai-difficulty", arg("--ai-difficulty").as_deref(), 2)?,
+        ai_level,
     }))
 }
 
@@ -204,6 +277,33 @@ mod tests {
             assert_eq!(ids[2].1, 1);
             assert_eq!(ids[3].0, 33, "a prefixed name without the prefix");
             assert_eq!(s.given, [true; 4]);
+        }
+    }
+
+    #[test]
+    fn the_ai_plays_the_seats_asked_as_asked() {
+        let Some(r) = roster() else { return };
+        let s = from_args(&args("--mode vs --ai 1,2 --ai-style 1:rushdown,2:random --ai-difficulty easy --ai-level 4"), &r).unwrap().unwrap();
+        assert_eq!((s.ai, s.ai_style[0], s.ai_style[1], s.ai_difficulty, s.ai_level), ([true, true, false, false], Some(Style::Rushdown), None, 0, 4));
+        let s = from_args(&args("--mode tag-teams --ai 1,2,3,4 --ai-style Thrower"), &r).unwrap().unwrap();
+        assert_eq!((s.ai, s.ai_style, s.ai_difficulty, s.ai_level), ([true; 4], [Some(Style::Thrower); 4], 2, 9));
+        let s = from_args(&args("--mode arcade --ai 1"), &r).unwrap().unwrap();
+        assert_eq!((s.ai, s.ai_style[0]), ([true, false, false, false], Some(Style::Classic)));
+        assert!(from_args(&args("--mode force --coop --ai 2"), &r).unwrap().is_some());
+        for bad in [
+            "--mode vs --ai 3",
+            "--mode vs --ai 0",
+            "--mode vs --ai one",
+            "--mode practice --ai 1",
+            "--mode force --ai 2",
+            "--mode vs --ai 1 --ai-style kicker",
+            "--mode vs --ai 1 --ai-style 2:rushdown",
+            "--mode vs --ai 1 --ai-level 10",
+            "--mode vs --ai 1 --ai-difficulty insane",
+            "--mode vs --ai 1 --online ROOM",
+            "--ai 1",
+        ] {
+            assert!(from_args(&args(bad), &r).is_err(), "{bad}");
         }
     }
 }
