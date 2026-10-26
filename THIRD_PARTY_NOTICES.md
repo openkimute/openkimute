@@ -26,3 +26,4 @@ the variable font's Latin subset, as packaged by [Fontsource](https://fontsource
 The repository contains no game data. Everything game-specific is
 read by the converter (kumite_converter, a separate project) from the user's own copies, and by OpenKumite from the
 converter's output.
+
