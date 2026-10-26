@@ -23,6 +23,7 @@ PNG, JSON, WAV/FLAC and AVI.
 | `fuzz/` | cargo-fuzz targets for everything read from files or the network |
 | `vendor/matchbox_socket/` | Patched matchbox_socket (rustls instead of the default TLS backend) |
 | `vendor/winit/` | Patched winit (a gamepad's stick and d-pad on Android) |
+| `flake.nix` | Nix flake for Linux: the game's package and a development shell |
 | `check.sh` | Formatting, clippy, tests, `cargo deny` and fuzzing, also run by the git hooks |
 
 ## Assets
@@ -47,11 +48,25 @@ cargo run --release
 cargo run --release -- --help     # the full command line
 ```
 
-On Linux with Nix (`flake.nix`): `nix run github:openkumite/openkumite -- --assets DIR` plays without a checkout; in one,
-`nix develop` gives the toolchain and libraries for the commands here, `check.sh` and the browser build.
-
 The game starts at the title screen. Modes include Arcade, VS, Team Battle, Time Attack, Survival, Force,
 Practice and Watch CPU, plus OpenKumite's own Tag Brawl and Online.
+
+### Nix (Linux)
+
+`flake.nix` builds the game and `serve` for x86_64 and aarch64 Linux (macOS uses the `.app` from the releases).
+Flakes must be enabled (`experimental-features = nix-command flakes`).
+
+```sh
+nix run github:openkumite/openkumite -- --assets DIR   # play without a checkout
+nix profile add github:openkumite/openkumite           # install openkumite and serve (older Nix: install)
+nix build                                              # in a checkout: result/bin/openkumite, result/bin/serve
+nix develop                                            # the toolchain and libraries for check.sh and the browser build
+```
+
+On NixOS, add the flake as an input and put `inputs.openkumite.packages.${pkgs.system}.default` in
+`environment.systemPackages` (or `home.packages`). The game finds the assets as above, e.g. in
+`~/.local/share/openkumite/assets`. On other distributions a Nix-built program may not find the system's GPU driver;
+if the game reports no GPU, start it through [nixGL](https://github.com/nix-community/nixGL).
 
 ### Controls
 
@@ -226,7 +241,7 @@ sh check.sh all 60   # the above and every fuzz target for 60 s each
 
 The git hooks (`.cargo-husky/hooks`) run `commit` and `push`. Tests read the converted assets from
 `OPENKUMITE_ASSETS` (default `assets/`); the ones that need them skip when they are missing or an older conversion
-(CI has none). The integration tests in `app/tests/` run the game's binary headless and need a GPU too. The wasm lint needs `rustup target add wasm32-unknown-unknown`;
+(CI has none). The integration tests in `app/tests/` run the game's binary headless and need a GPU too. The wasm lint needs `rustup target add wasm32-unknown-unknown` (`nix develop` on Linux has it all);
 fuzzing needs nightly and `cargo-fuzz`.
 
 Code rules (workspace lints): no `unsafe` (except the macOS haptics FFI), and no `unwrap` / `expect` / `panic!` on
