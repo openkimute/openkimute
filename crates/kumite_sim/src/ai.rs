@@ -10,7 +10,8 @@
 //! low-HP zeroing) are kept as the game keeps them.
 //!
 //! Not ported (never reached outside these modes): Ball / Force hooks and the attract demo's
-//! frame skip and halved cooldowns. (A CPU Force player, OpenKumite's own, walks on while no soldier faces it.)
+//! frame skip and halved cooldowns. (A CPU Force player, OpenKumite's own, plays the stage over the routine: chickens,
+//! the way on, the soldiers around it; [`ForceSight`].)
 
 use crate::data::{Cancel, CancelKind, Move};
 use crate::input::Pad;
@@ -576,6 +577,19 @@ pub struct Sight<'a> {
     pub opp_chest: f32,
     /// Ball: the ball projected on the line between the fighters (record 8 0x800B4494).
     pub ball: Option<crate::ball::BallSight>,
+    /// A Force player seat: the stage around it (None: the game's CPU, the soldiers' too).
+    pub force: Option<ForceSight<'a>>,
+}
+
+/// What a CPU Force player sees of the stage (OpenKumite's own: the game's Force player is never a CPU).
+pub struct ForceSight<'a> {
+    /// Every actor (players [`crate::Fight::is_player`], soldiers and bosses the others) and the way on
+    /// (`screen_right`).
+    pub fight: &'a crate::Fight,
+    /// My actor index.
+    pub me: usize,
+    /// The roast chickens within reach (simulation positions).
+    pub pickups: &'a [glam::Vec3],
 }
 
 /// Per-frame view of the two actors.
@@ -709,6 +723,81 @@ fn to_pad(out: u16, facing_right: bool) -> Pad {
     let (right, left) = if facing_right { (fwd, back) } else { (back, fwd) };
     let buttons = BTN.iter().enumerate().filter(|(_, &b)| out & b != 0).fold(0u8, |a, (k, _)| a | 1 << k);
     Pad { up: out & 0x1000 != 0, down: out & 0x4000 != 0, left, right, buttons, start: false }
+}
+
+/// A CPU Force player's own moves over the routine (OpenKumite's own; None: the routine fights its foe): a chicken
+/// when hurt (the lowest player hurt takes the nearest), on along the stage while no soldier is near (alone along
+/// its middle line, in co-op no further than 600 ahead of the partner), out to the side from between two soldiers
+/// still coming, to a soldier nobody takes on while the partner has my foe. Down or in the air, the routine gets
+/// up. Draws nothing from the random streams.
+fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
+    use crate::Fight;
+    let (me, f) = (sight.me, s.fight);
+    if me.current_move(sight.gd).posture.raw & 0x204 != 0 || me.airborne_flag(sight.gd) {
+        return None;
+    }
+    let p = me.root();
+    let flat = |v: glam::Vec3| glam::Vec3::new(v.x, 0.0, v.z);
+    let dist2 = |a: glam::Vec3, b: glam::Vec3| flat(a - b).length_squared();
+    let standing = |i: usize| f.actor(i).filter(|a| !a.inactive && a.health > 0);
+    let pos = |i: usize| f.actor(i).map_or(p, Fighter::root);
+    // a chicken (+50) when 50 down: the lowest of the players hurt takes its nearest first
+    let hurt = |a: &Fighter| a.health <= (a.max_health - 50) * ONE;
+    if hurt(me) {
+        let mut players: Vec<usize> = (0..f.actor_count()).filter(|&i| Fight::is_player(i) && standing(i).is_some_and(hurt)).collect();
+        players.sort_by_key(|&i| (standing(i).map_or(0, |a| a.health), i));
+        let mut left = s.pickups.to_vec();
+        for i in players {
+            let Some(k) = (0..left.len()).min_by(|&a, &b| dist2(left[a], pos(i)).total_cmp(&dist2(left[b], pos(i)))) else { break };
+            let c = left.swap_remove(k);
+            if i == s.me {
+                return Some(force_go(me, c, f));
+            }
+        }
+    }
+    let near: Vec<usize> = (0..f.actor_count()).filter(|&i| !Fight::is_player(i) && standing(i).is_some() && dist2(pos(i), p) < 2500.0 * 2500.0).collect();
+    let partners: Vec<usize> = (0..f.actor_count()).filter(|&i| i != s.me && Fight::is_player(i) && standing(i).is_some()).collect();
+    if near.is_empty() || sight.op.inactive {
+        let ahead = |q: glam::Vec3| q.dot(f.screen_right);
+        let on = partners.iter().map(|&i| ahead(pos(i)) + 600.0 - ahead(p)).fold(1500.0, f32::min);
+        let from = if partners.is_empty() { glam::Vec3::new(p.x, 0.0, 0.0) } else { p };
+        return Some(force_go(me, from + f.screen_right * on, f));
+    }
+    // the two nearest soldiers on either side, both still over 700 away: out of their line, so both come from
+    // in front (by the stage's edge, back towards its middle)
+    let mut close: Vec<usize> = near.iter().copied().filter(|&i| dist2(pos(i), p) < 1800.0 * 1800.0).collect();
+    close.sort_by(|&a, &b| dist2(pos(a), p).total_cmp(&dist2(pos(b), p)));
+    if let [a, b, ..] = close[..] {
+        let (da, db) = (flat(pos(a) - p), flat(pos(b) - p));
+        if da.dot(db) < -0.5 * da.length() * db.length() && da.length() > 700.0 {
+            let side = flat(pos(b) - pos(a)).cross(glam::Vec3::Y);
+            let away = if p.z.abs() > 1200.0 { -p.z * side.z } else { flat(p - pos(a)).dot(side) };
+            let side = if away >= 0.0 { side } else { -side };
+            return Some(force_go(me, p + side * (800.0 / side.length().max(1.0)), f));
+        }
+    }
+    // co-op: a partner nearer my foe takes it on while a soldier near is nobody's: that one is mine
+    let foe = f.opponent_index(s.me);
+    if partners.iter().any(|&i| f.opponent_index(i) == foe && dist2(pos(i), pos(foe)) < dist2(p, pos(foe))) {
+        let free = near.iter().copied().filter(|&i| i != foe && partners.iter().all(|&j| f.opponent_index(j) != i));
+        if let Some(i) = free.min_by(|&a, &b| dist2(pos(a), p).total_cmp(&dist2(pos(b), p))) {
+            return Some(force_go(me, pos(i), f));
+        }
+    }
+    None
+}
+
+/// The pad that takes a Force player towards `to`: walks and runs along the stage, sidesteps (a tap every
+/// sixth frame: held up jumps, held down crouches) across it.
+fn force_go(me: &Fighter, to: glam::Vec3, f: &crate::Fight) -> Pad {
+    let d = to - me.root();
+    // (the screen's right and into the screen: up)
+    let (along, deep) = (d.dot(f.screen_right), d.dot(glam::Vec3::Y.cross(f.screen_right)));
+    if deep.abs() > 300.0 && deep.abs() > along.abs() * 0.5 {
+        let tap = f.frame.is_multiple_of(6);
+        return Pad { up: tap && deep > 0.0, down: tap && deep < 0.0, ..Pad::default() };
+    }
+    Pad { right: along > 100.0, left: along < -100.0, ..Pad::default() }
 }
 
 /// Where control goes after a block of the routine: the output (`LAB_80060E6C`) or the movement chooser.
@@ -1186,10 +1275,8 @@ impl Ai {
     /// The pad for this frame (0x80059890). The game calls it only while the CPU has HP left.
     pub fn think(&mut self, data: &AiData, rng: &mut AiRng, s: &Sight) -> Pad {
         self.prepare(data, rng, s);
-        // Force: no foe in his slot (no soldier there yet): walk on along the stage, to the screen's right
-        // (OpenKumite's own: the game's Force player is never a CPU)
-        if s.op.inactive {
-            return Pad { right: true, ..Pad::default() };
+        if let Some(pad) = s.force.as_ref().and_then(|f| force_move(s, f)) {
+            return pad;
         }
         let (gd, me, op) = (s.gd, s.me, s.op);
         let (m, h) = (Rec::of(gd, me, me.current).unwrap_or_default(), Rec::of(gd, op, op.current).unwrap_or_default());
@@ -3766,7 +3853,7 @@ mod tests {
 
     /// P2's pad from its CPU.
     fn think(ai: &mut Ai, data: &AiData, rng: &mut AiRng, f: &Fight) -> Pad {
-        let s = Sight { gd: &f.data, me: &f.fighters[1], op: &f.fighters[0], facing_right: f.facing_right(1), opp_chest: 1425.0, ball: None };
+        let s = Sight { gd: &f.data, me: &f.fighters[1], op: &f.fighters[0], facing_right: f.facing_right(1), opp_chest: 1425.0, ball: None, force: None };
         ai.think(data, rng, &s)
     }
 

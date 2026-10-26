@@ -182,6 +182,8 @@ pub struct Game {
     /// bodies (None: a place nobody fills) and pads.
     pub more_body: Vec<Option<Arc<Body>>>,
     pub more_pad: Vec<Pad>,
+    /// Force: the roast chickens within reach (simulation positions; the stage's logic sets them), for a CPU player.
+    pub pickups: Vec<Vec3>,
     /// Ball 2 ON 2: the partner of each side's fighter (the players' side's, then the other's), put on the
     /// court with them every round (actors 3 and 2).
     pub ball_team: Option<[Actor; 2]>,
@@ -310,6 +312,7 @@ impl Game {
             partner_pad: Pad::default(),
             more_body: Vec::new(),
             more_pad: Vec::new(),
+            pickups: Vec::new(),
             ball_team: None,
             ball_team_human: [false; 2],
             ball_ring: VecDeque::new(),
@@ -891,8 +894,9 @@ impl Game {
 
     /// The pose as animated.
     fn pose_animated(&self, i: usize) -> (Vec<Mat4>, Mat4) {
-        let shown = self.display.map_or_else(|| self.snapshot(i), |d| d[i]);
-        shown_pose(&self.bodies[i], &self.bodies[1 - i], &shown)
+        // (live, a borrowed clip is its owner's, as `clip` took it: in Force's co-op, any foe's)
+        let (shown, other) = self.display.map_or_else(|| (self.snapshot(i), self.clip_owner(i)), |d| (d[i], &self.bodies[1 - i]));
+        shown_pose(&self.bodies[i], other, &shown)
     }
 
     /// Collision volumes of both fighters for the pose currently shown (game units).

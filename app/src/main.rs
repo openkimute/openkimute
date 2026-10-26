@@ -3517,6 +3517,11 @@ impl App {
         let shown = force_sim(&self.roster, &self.assets, &self.actor_cache, &ctx, &mut fight.bout, st, self.force_ko_boss);
         run.step_hud(&fight.bout.game);
         self.force_shown(shown);
+        // an AI 2P down gets up again: its START, as a person's (the join is recorded; a replay has it)
+        let down = |f: &Fight| f.bout.partner_cpu.is_some() && f.bout.phase == Phase::Fight && f.bout.game.fight.partner.as_ref().is_some_and(|p| p.health <= 0);
+        if self.replay_view.is_none() && self.fight.as_ref().is_some_and(down) {
+            self.join_force_partner();
+        }
     }
 
     /// Force's events for the eyes and ears: sounds, the music's fade, the boss's music.

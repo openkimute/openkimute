@@ -61,3 +61,11 @@ fn a_vs_match_against_the_cpu_replays_as_recorded() {
     let mode = ["--mode", "vs", "--fighters", "paul,law", "--p2-cpu"];
     an_ai_match_replays_as_recorded(&mode, "9000", r#""ai":[null,{"style":"Classic","difficulty":1,"level":5},null,null]"#, "p2cpu");
 }
+
+/// Force's co-op of two AIs (chickens, the soldiers split, a down 2P up again: a recorded join): a stage's replay
+/// ends as recorded.
+#[test]
+fn a_force_co_op_of_two_ais_replays_as_recorded() {
+    let mode = ["--mode", "force", "--fighters", "paul,law", "--ai", "1,2", "--ai-style", "1:thrower,2:rushdown", "--coop"];
+    an_ai_match_replays_as_recorded(&mode, "30000", r#""ai":[{"style":"Thrower","difficulty":2,"level":9},{"style":"Rushdown","difficulty":2,"level":9},null,null]"#, "force");
+}

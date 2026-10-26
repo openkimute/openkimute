@@ -147,8 +147,17 @@ impl Melee {
 
     /// Whether actor `i` has its opponent to its right on the pad.
     pub fn facing_right(&self, i: usize) -> bool {
-        let o = self.facing(i);
-        (self.actors[o].root() - self.actors[i].root()).dot(self.fight.screen_right) >= 0.0
+        (self.aim(i).0 - self.actors[i].root()).dot(self.fight.screen_right) >= 0.0
+    }
+
+    /// Where actor `i` turns (and how evasive that is): its opponent, or with none in play, Force's way on
+    /// ([`Fight::idle_target`]).
+    fn aim(&self, i: usize) -> (Vec3, u32) {
+        let o = &self.actors[self.facing(i)];
+        match self.fight.idle_target {
+            Some(t) if o.inactive => (t, 0),
+            _ => (o.root(), o.evasive),
+        }
     }
 
     fn retarget(&mut self) {
@@ -218,6 +227,9 @@ impl Melee {
         for i in 0..n {
             let o = self.facing(i);
             let mut sight = sight_of(&self.actors[o], &gd);
+            if let (Some(t), true) = (self.fight.idle_target, self.actors[o].inactive) {
+                (sight.root, sight.position, sight.evasive) = (t, t, 0);
+            }
             // a character the data marks cannot be thrown but by its own kind (0x800404E8)
             let c = self.actors[o].character;
             if c.is_some_and(|c| gd.characters.unthrowable.contains(&c)) && self.actors[i].character != c {
@@ -255,8 +267,7 @@ impl Melee {
         }
         // facing, after every actor's logic, against where its opponent is now
         for (i, frozen) in frozen.into_iter().enumerate() {
-            let o = self.facing(i);
-            let (root, evasive) = (self.actors[o].root(), self.actors[o].evasive);
+            let (root, evasive) = self.aim(i);
             let f = &mut self.actors[i];
             (f.opponent.root, f.opponent.evasive) = (root, evasive);
             if !frozen && !f.inactive {
@@ -273,7 +284,8 @@ impl Melee {
             self.on_pair(a, b, |f| f.throw_hits(&gd));
         }
         self.links.retain(|&(a, b, c)| {
-            let over = self.actors[a].current != c[0] && self.actors[b].current != c[1];
+            // (or one of them is out of play, a Force soldier gone: it steps no more, so never leaves its move)
+            let over = (self.actors[a].current != c[0] && self.actors[b].current != c[1]) || self.actors[a].inactive || self.actors[b].inactive;
             if over {
                 for k in [a, b] {
                     self.actors[k].locked = false;

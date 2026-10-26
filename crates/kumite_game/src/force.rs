@@ -431,11 +431,9 @@ impl ForceStage {
     /// The players are more than two (or two with the widened melee): the soldiers' places for all of them.
     pub fn widen(&mut self, game: &mut Game) {
         game.widen_coop(12);
-        if self.slots.len() < 8 {
-            let kind = |k: usize| k % 2;
-            for k in self.slots.len()..8 {
-                self.slots.push(Slot { kind: kind(k), ..Default::default() });
-            }
+        // (no kind yet: the first spawn loads its body, else the place's stand-in, without one, is never hit)
+        while self.slots.len() < 8 {
+            self.slots.push(Slot { kind: usize::MAX, ..Default::default() });
         }
     }
 
@@ -494,6 +492,12 @@ impl ForceStage {
         self.retarget(game);
         self.bounds(game);
         self.update_camera(game);
+        // the chickens a CPU player can reach: not behind the camera's left, nor past its right while it stays
+        // shortcut: the flat stages' frustum edges at the middle line (the slanted one's differ a little), per stage
+        // if a CPU player is seen to miss a chicken there
+        let [_, lo, _, hi] = self.data.constants.bounds.human_x[0];
+        let reach = |c: &&Chicken| c.state == 1 && c.x as f32 >= self.cam_x as f32 + lo && (self.camera_mode != 1 || c.x as f32 <= self.cam_x as f32 + hi);
+        game.pickups = self.chickens.iter().filter(reach).map(|c| Vec3::new(c.x as f32, 0.0, -c.z as f32)).collect();
         self.score = self.score.min(99_999_990);
         self.hiscore = self.hiscore.max(self.score);
         game.fight.clock = game.fight.clock.min(CLOCK_CAP);

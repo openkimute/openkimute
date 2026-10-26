@@ -447,7 +447,7 @@ impl TagGame {
         for (i, pad) in out.iter_mut().enumerate() {
             let Some(ai) = self.cpu[i].as_mut() else { continue };
             let o = m.facing(i);
-            let s = Sight { gd: &m.fight.data, me: &m.actors[i], op: &m.actors[o], facing_right: m.facing_right(i), opp_chest: chest[o], ball: None };
+            let s = Sight { gd: &m.fight.data, me: &m.actors[i], op: &m.actors[o], facing_right: m.facing_right(i), opp_chest: chest[o], ball: None, force: None };
             ai.prepare(&self.ai_data, &mut self.ai_rng, &s);
             *pad = if m.actors[i].health > 0 { ai.think(&self.ai_data, &mut self.ai_rng, &s) } else { Pad::default() };
         }

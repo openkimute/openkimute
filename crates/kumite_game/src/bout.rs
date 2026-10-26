@@ -3,7 +3,7 @@
 //! poses and CPU players.
 
 use crate::{CameraMode, Game};
-use kumite_sim::ai::{Ai, AiData, AiRng, Sight};
+use kumite_sim::ai::{Ai, AiData, AiRng, ForceSight, Sight};
 use kumite_sim::camera::EndCam;
 use kumite_sim::input::Pad;
 use kumite_sim::RoundState;
@@ -747,6 +747,8 @@ impl Bout {
                 facing_right: f.actor_facing_right(i),
                 opp_chest: if coop { chest_of(o).max(1425.0) } else { chest[1 - i.min(1)] },
                 ball,
+                // (a Force player seat: the stage around it)
+                force: (self.force && kumite_sim::Fight::is_player(i)).then_some(ForceSight { fight: f, me: i, pickups: &self.game.pickups }),
             }
         };
         // the round setup of both CPUs comes before either thinks
@@ -767,7 +769,7 @@ impl Bout {
                 sight(2)
             } else {
                 let facing_right = (e.root() - f.fighters[0].root()).dot(f.screen_right) < 0.0;
-                Sight { gd: &f.data, me: e, op: &f.fighters[0], facing_right, opp_chest: chest[0].max(1425.0), ball: None }
+                Sight { gd: &f.data, me: e, op: &f.fighters[0], facing_right, opp_chest: chest[0].max(1425.0), ball: None, force: None }
             };
             ai.prepare(&self.ai_data, &mut self.ai_rng, &s);
             extra_pad = ai.think(&self.ai_data, &mut self.ai_rng, &s);

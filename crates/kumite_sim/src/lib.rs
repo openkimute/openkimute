@@ -2077,7 +2077,9 @@ impl Fight {
         if self.coop.is_none() && i < 2 {
             return self.facing_right(i);
         }
-        (op.root() - me.root()).dot(self.screen_right) >= 0.0
+        // (no foe in play: the way on, as the co-op melee turns it)
+        let to = self.idle_target.filter(|_| op.inactive).unwrap_or_else(|| op.root());
+        (to - me.root()).dot(self.screen_right) >= 0.0
     }
 
     /// Force's co-op: the partner joins (at `partner`'s place); from now on the four fight as a melee.
@@ -2103,7 +2105,7 @@ impl Fight {
         self.frame += 1;
         self.hits.clear();
         m.fight.frame = self.frame - 1;
-        m.fight.screen_right = self.screen_right;
+        (m.fight.screen_right, m.fight.idle_target) = (self.screen_right, self.idle_target);
         (m.fight.guard_damage, m.fight.ko_collapse) = (self.guard_damage, self.ko_collapse);
         m.state = melee::MeleeState::Fighting;
         m.fight.ball_rules = self.ball.is_some();
