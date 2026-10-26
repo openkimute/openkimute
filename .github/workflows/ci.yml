@@ -1,14 +1,15 @@
 # The checks a pull request must pass to be merged into main (the branch's ruleset requires them), as check.sh does
 # them: rustfmt, clippy with warnings as errors (native on each OS, the browser build), the tests, cargo deny. The
 # tests that read the converted game data skip themselves here (there is none: it is copyrighted).
-# A change of only Markdown (*.md) and LICENSE* files builds nothing: `changes` says so, lint and android are skipped,
-# and each test job runs its steps only for code (on Linux otherwise, so its required check still passes at once).
+# A change of only Markdown and LICENSE* files runs no CI at all; such a PR is merged with the admin bypass.
 name: ci
 
 on:
   pull_request:
+    paths-ignore: ["**.md", "**/LICENSE*", "LICENSE*"]
   push:
     branches: [main]
+    paths-ignore: ["**.md", "**/LICENSE*", "LICENSE*"]
 
 permissions:
   contents: read
@@ -21,31 +22,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # code: "false" when every changed file is Markdown or a licence; anything else, or an unknown diff, is code
-  changes:
-    runs-on: ubuntu-24.04
-    outputs:
-      code: ${{ steps.diff.outputs.code }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - id: diff
-        env:
-          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          if files=$(git diff --name-only "$BASE" "$GITHUB_SHA" 2>/dev/null) && [ -n "$files" ] \
-              && ! printf '%s\n' "$files" | grep -Evq '(\.md$|(^|/)LICENSE[^/]*$)'; then
-            code=false
-          else
-            code=true
-          fi
-          printf '%s\n' "$files" | sed 's/^/changed: /'
-          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
-
   lint:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -63,33 +40,23 @@ jobs:
       - run: cargo deny --log-level error check
 
   test:
-    needs: changes
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-latest]
-    # (no code changed: the same check on Linux with its steps skipped, so no Windows or macOS runner is waited for)
-    runs-on: ${{ needs.changes.outputs.code == 'true' && matrix.os || 'ubuntu-24.04' }}
-    env:
-      CODE: ${{ needs.changes.outputs.code }}
+    runs-on: ${{ matrix.os }}
     steps:
-      - if: env.CODE == 'true'
-        uses: actions/checkout@v7
-      - if: env.CODE == 'true'
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - if: env.CODE == 'true' && runner.os == 'Linux'
+      - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
-      - if: env.CODE == 'true'
-        run: cargo clippy --workspace --all-targets --release -- -D warnings
-      - if: env.CODE == 'true'
-        run: cargo test --workspace --release
+      - run: cargo clippy --workspace --all-targets --release -- -D warnings
+      - run: cargo test --workspace --release
 
   # the Android APK builds (packaging/android/build.sh; the runner has the SDK, an NDK and a JDK); no device to run it
   android:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
