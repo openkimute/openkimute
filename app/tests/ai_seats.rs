@@ -54,3 +54,10 @@ fn a_tag_brawl_of_four_ais_replays_as_recorded() {
     let mode = ["--mode", "tag-teams", "--fighters", "paul,law,king,lei", "--ai", "1,2,3,4", "--ai-style", "random", "--ai-level", "7"];
     an_ai_match_replays_as_recorded(&mode, "12000", r#""difficulty":2,"level":7},{"style":"#, "tag");
 }
+
+/// VS `--p2-cpu` (P1 idle): 2P is the game's CPU, kept in the replay as its seat, so the replay plays it again.
+#[test]
+fn a_vs_match_against_the_cpu_replays_as_recorded() {
+    let mode = ["--mode", "vs", "--fighters", "paul,law", "--p2-cpu"];
+    an_ai_match_replays_as_recorded(&mode, "9000", r#""ai":[null,{"style":"Classic","difficulty":1,"level":5},null,null]"#, "p2cpu");
+}

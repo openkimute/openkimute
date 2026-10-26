@@ -2787,6 +2787,10 @@ impl App {
                 replay::AiSeat { style, difficulty: spec.ai_difficulty, level: spec.ai_level }
             });
         }
+        // VS `--p2-cpu`: 2P the game's CPU, an AI seat like the others (so its replay has it)
+        if spec.mode == L::Versus && spec.p2_cpu && self.ai_seats[1].is_none() {
+            self.ai_seats[1] = Some(replay::AiSeat { style: kumite_sim::ai::Style::Classic, difficulty: spec.difficulty, level: 5 });
+        }
         log::info!("--ai: {:?}", self.ai_seats);
         let fight = |mode: Mode, stage: usize, ball| FightSetup {
             mode,
@@ -2833,11 +2837,6 @@ impl App {
                 // Ball is played on its own stage (0x8004F71C), as the select screen does
                 let stage = if mode == Mode::Ball { roster.ball_stage } else { roster.home_stage(id(p2), p2.1) };
                 self.load_fight(fight(mode, stage, ball), Vec::new());
-                if spec.mode == L::Versus && spec.p2_cpu {
-                    if let Some(f) = self.fight.as_mut() {
-                        f.bout.set_cpu(1, Some((spec.difficulty, 5)));
-                    }
-                }
             }
             L::ExtraLevels => {
                 let Some(stage) = spec.stage.or(roster.extra_levels.first().map(|l| l.0)) else {
