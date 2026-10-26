@@ -6,6 +6,7 @@ on:
   pull_request:
     paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
   push:
+    branches: [main]
     paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
   workflow_dispatch:
 
