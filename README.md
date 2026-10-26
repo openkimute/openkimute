@@ -46,6 +46,9 @@ cargo run --release
 cargo run --release -- --help     # the full command line
 ```
 
+With Nix (`flake.nix`): `nix run github:openkumite/openkumite -- --assets DIR` plays without a checkout; in one,
+`nix develop` gives the toolchain and libraries for the commands here, `check.sh` and the browser build.
+
 The game starts at the title screen. Modes include Arcade, VS, Team Battle, Time Attack, Survival, Force,
 Practice and Watch CPU, plus OpenKumite's own Tag Brawl and Online.
 

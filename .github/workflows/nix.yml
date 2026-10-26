@@ -1,0 +1,31 @@
+# The Nix flake (flake.nix): it evaluates for every system, and builds (with the tests that run without the game data)
+# on Linux and macOS. Only when what it builds from changes.
+name: nix
+
+on:
+  pull_request:
+    paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
+  push:
+    paths: [flake.nix, flake.lock, Cargo.lock, "**/Cargo.toml", .github/workflows/nix.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - run: nix flake check --all-systems
+      - run: nix build -L
+      - run: ./result/bin/openkumite --help
