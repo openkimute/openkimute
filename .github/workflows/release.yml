@@ -101,7 +101,7 @@ jobs:
         run: |
           d=openkumite-$TAG-${{ matrix.name }}
           mkdir "$d" && cp target/${{ matrix.arch }}-unknown-linux-gnu/dist/openkumite target/${{ matrix.arch }}-unknown-linux-musl/dist/serve \
-            README.md LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md "$d/"
+            README.md LICENSE-MIT THIRD_PARTY_NOTICES.md "$d/"
           tar -czf "$d.tar.gz" "$d"
       - uses: ./.github/actions/nfpm
       - name: deb, rpm, Arch
@@ -193,7 +193,7 @@ jobs:
         run: |
           $d = "openkumite-$env:TAG-${{ matrix.name }}"
           New-Item -ItemType Directory $d | Out-Null
-          Copy-Item "target\${{ matrix.target }}\dist\openkumite.exe", "target\${{ matrix.target }}\dist\serve.exe", README.md, LICENSE-MIT, LICENSE-APACHE, THIRD_PARTY_NOTICES.md $d
+          Copy-Item "target\${{ matrix.target }}\dist\openkumite.exe", "target\${{ matrix.target }}\dist\serve.exe", README.md, LICENSE-MIT,, THIRD_PARTY_NOTICES.md $d
           Compress-Archive $d "$d.zip"
       - uses: actions/upload-artifact@v7
         with:
@@ -226,7 +226,7 @@ jobs:
         run: |
           d=openkumite-$TAG-macos-universal
           mkdir "$d" && sh packaging/macos/bundle.sh openkumite "${TAG#v}" "$d"
-          cp serve README.md LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md "$d/"
+          cp serve README.md LICENSE-MIT THIRD_PARTY_NOTICES.md "$d/"
           tar -czf "$d.tar.gz" "$d"
       - uses: actions/upload-artifact@v7
         with:
@@ -251,7 +251,7 @@ jobs:
           mkdir -p target/tools/bin && ln -s "$(command -v wasm-bindgen)" target/tools/bin/wasm-bindgen
           sh web/build.sh
           d=openkumite-$TAG-web
-          mkdir -p "$d/pkg" "$d/fonts" && cp web/fonts/* "$d/fonts/" && cp web/index.html web/store_worker.js web/sw.js web/manifest.webmanifest web/preload.json README.md LICENSE-MIT LICENSE-APACHE THIRD_PARTY_NOTICES.md "$d/"
+          mkdir -p "$d/pkg" "$d/fonts" && cp web/fonts/* "$d/fonts/" && cp web/index.html web/store_worker.js web/sw.js web/manifest.webmanifest web/preload.json README.md LICENSE-MIT THIRD_PARTY_NOTICES.md "$d/"
           cp web/pkg/* "$d/pkg/"
           zip -qr "$d.zip" "$d"
       - uses: actions/upload-artifact@v7

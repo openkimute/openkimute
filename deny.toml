@@ -14,7 +14,7 @@ ignore = [
 ]
 
 [licenses]
-# Permissive licenses only (OpenKumite is MIT OR Apache-2.0); CDLA-Permissive-2.0: webpki-roots, the Mozilla CA list (wss);
+# Permissive licenses only (OpenKumite is MIT); CDLA-Permissive-2.0: webpki-roots, the Mozilla CA list (wss);
 # NCSA (LLVM's): libfuzzer-sys, which rav1e names for its fuzzing builds only (and fuzz/ uses).
 allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib", "Unicode-3.0", "BSL-1.0", "MPL-2.0", "OFL-1.1", "Ubuntu-font-1.0", "0BSD", "Unlicense", "CDLA-Permissive-2.0", "NCSA"]
 confidence-threshold = 0.9

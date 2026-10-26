@@ -1,8 +1,8 @@
 # Third-party notices
 
-OpenKumite's own code is under either of [LICENSE-MIT](LICENSE-MIT) or [LICENSE-APACHE](LICENSE-APACHE), at your
-option. It contains, or is derived from, the following third-party work. The Rust crates it depends on are under
-their own licences (MIT, Apache-2.0, BSD, Zlib, MPL-2.0, ...), checked by `cargo deny` against `deny.toml`.
+OpenKumite's own code is under the [MIT licence](LICENSE-MIT). It contains, or is derived from, the following third-party
+work. The Rust crates it depends on are under their own licences
+(MIT, Apache-2.0, BSD, Zlib, MPL-2.0, ...), checked by `cargo deny` against `deny.toml`.
 
 ## matchbox_socket 0.14 (`vendor/matchbox_socket/`)
 

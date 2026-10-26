@@ -20,7 +20,7 @@ description: |
   local versus and online rollback netplay.
 vendor: OpenKumite
 homepage: https://github.com/openkumite/openkumite
-license: MIT OR Apache-2.0
+license: MIT
 
 contents:
   - src: target/package/openkumite
@@ -36,8 +36,6 @@ contents:
     dst: /usr/share/doc/openkumite/THIRD_PARTY_NOTICES.md
   - src: LICENSE-MIT
     dst: /usr/share/licenses/openkumite/LICENSE-MIT
-  - src: LICENSE-APACHE
-    dst: /usr/share/licenses/openkumite/LICENSE-APACHE
 
 # What the binary links (ALSA for sound, libudev for gamepads); the GPU (Vulkan, else GL) is loaded when it starts,
 # so its loader is recommended, not required.

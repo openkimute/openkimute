@@ -223,5 +223,5 @@ anything that comes from outside: the game must never crash on bad files or netw
 
 ## License
 
-OpenKumite's code is licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+OpenKumite's code is licensed under the [MIT licence](LICENSE-MIT).
 See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the vendored code.
