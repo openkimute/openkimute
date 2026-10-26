@@ -180,6 +180,8 @@ while [ "$i" -lt "$matches" ]; do
     [ -z "$rounds" ] || set -- "$@" --rounds "$rounds"
     if [ "$ai" = 1 ]; then
         set -- "$@" --ai "$seats" --ai-style "$style_arg" --ai-difficulty "$difficulty"
+        # (Force: a second AI seat is its co-op partner)
+        case "$mode,$seats" in force,*2*) set -- "$@" --coop ;; esac
         [ -z "$level" ] || set -- "$@" --ai-level "$level"
     elif [ "$mode" = vs ] || [ "$mode" = tag-arcade ]; then
         set -- "$@" --p2-cpu
