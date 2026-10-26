@@ -41,6 +41,8 @@ the game at it. The native game looks for the assets in this order:
 
 A folder counts as a conversion when it holds `manifest.json`.
 
+On Android the app asks for the converted folder on its first screen and keeps a copy (see [Android build](#android-build)).
+
 ## Running natively
 
 ```sh
@@ -101,9 +103,19 @@ Headless example tools live in `crates/kumite_game/examples/` (`cpu_match`, `tra
 ## Android build
 
 `sh packaging/android/build.sh` builds `target/android/openkumite.apk` for arm64 phones and tablets (needs
-`ANDROID_HOME`, `ANDROID_NDK_HOME`, cargo-ndk and a JDK). Install it, then choose the folder kumite_converter wrote (or
-a .zip of it) on the app's first screen: the app copies it once. It plays with the on-screen pad or a gamepad. For
-developers, `adb push <assets> /sdcard/Android/data/io.github.openkumite/files/` puts the data in place directly.
+`ANDROID_HOME`, `ANDROID_NDK_HOME`, cargo-ndk and a JDK).
+
+The APK holds no game data. To play:
+
+1. Copy the folder kumite_converter wrote (or a `.zip` of it) onto the phone: over USB into Downloads, an SD card,
+   a USB drive or a cloud drive.
+2. Install the APK and open it. The first screen is **Game data**: tap **Choose folder** (or **Choose .zip**) and pick it
+   in Android's file picker.
+3. The app checks it is a conversion and copies it into its own storage (about 3 GB, with a progress bar), then starts.
+
+The **Game data** button on the title and main menu replaces or removes it later. Uninstalling the app deletes the
+copy, so a reinstall asks again. It plays with the on-screen pad (stick on the left, buttons on the right) or a gamepad.
+For developers, `adb push <assets> /sdcard/Android/data/io.github.openkumite/files/` puts the data in place directly.
 
 ## Browser build
 
