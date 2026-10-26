@@ -1,4 +1,4 @@
-# The browser version on GitHub Pages (https://openkimute.github.io/openkimute/), from main. Built with
+# The browser version on GitHub Pages (https://openkumite.github.io/openkumite/), from main. Built with
 # --no-server-assets: the site holds no game data; each player drops the folder kumite_converter wrote onto the page,
 # and their browser keeps it (OPFS, the same pack kumite_converter's own page on this site writes).
 name: pages

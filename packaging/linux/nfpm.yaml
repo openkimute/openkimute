@@ -19,7 +19,7 @@ description: |
   Plays game data converted by kumite_converter, 1:1 as the original:
   local versus and online rollback netplay.
 vendor: OpenKumite
-homepage: https://github.com/openkimute/openkimute
+homepage: https://github.com/openkumite/openkumite
 license: MIT OR Apache-2.0
 
 contents:

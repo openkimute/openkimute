@@ -12,7 +12,7 @@
 	<key>CFBundleIconFile</key>
 	<string>openkumite</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.openkimute.openkumite</string>
+	<string>io.github.openkumite.openkumite</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

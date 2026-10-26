@@ -4,7 +4,7 @@ A 3D fighting game engine in Rust that plays converted game data 1:1, as the ori
 (wgpu + winit) and in the browser (WebAssembly), with local two-player and online rollback netplay.
 
 The repository contains **no game data**. Everything game-specific is produced once by
-[kumite_converter](https://github.com/openkimute/kumite_converter) (a separate project) from your own copy of the game, as standard formats: glTF 2.0,
+[kumite_converter](https://github.com/openkumite/kumite_converter) (a separate project) from your own copy of the game, as standard formats: glTF 2.0,
 PNG, JSON, WAV/FLAC and AVI.
 
 ## Repository layout
@@ -26,7 +26,7 @@ PNG, JSON, WAV/FLAC and AVI.
 
 ## Assets
 
-Convert your own copy of the game with [kumite_converter](https://github.com/openkimute/kumite_converter), then put its output in `assets/` (git-ignored), or point
+Convert your own copy of the game with [kumite_converter](https://github.com/openkumite/kumite_converter), then put its output in `assets/` (git-ignored), or point
 the game at it. The native game looks for the assets in this order:
 
 1. `--assets DIR`
@@ -104,8 +104,8 @@ The page takes the game data from the first of:
 
 `sh web/build.sh --no-server-assets` (`web\build.bat --no-server-assets`) builds a page that never reads the
 server's `assets/`: every player brings their own copy. Every push to `main` deploys that build to GitHub Pages:
-https://openkimute.github.io/openkimute/. kumite_converter's browser page at
-https://openkimute.github.io/kumite_converter/ is on the same site, so a game it converts there is found by the
+https://openkumite.github.io/openkumite/. kumite_converter's browser page at
+https://openkumite.github.io/kumite_converter/ is on the same site, so a game it converts there is found by the
 game's page directly.
 
 The page is a PWA: the browser offers to install it (Chrome and Edge: the install icon in the address bar; Android:
