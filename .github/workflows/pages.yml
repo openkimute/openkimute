@@ -6,6 +6,8 @@ name: pages
 on:
   push:
     branches: [main]
+    # (the site has no Markdown in it: a docs-only change leaves it as it is)
+    paths-ignore: ["**.md", "LICENSE*"]
   workflow_dispatch:
 
 permissions:
