@@ -94,6 +94,11 @@ pub enum StatusAction {
 impl Export {
     /// Start it: this game's program again, `--export-video`, on the same game data and save folder.
     pub fn start(d: &Dialog, out: PathBuf, assets: &std::path::Path) -> anyhow::Result<Self> {
+        // shortcut: Android has no program to run again (the game is a library in its activity); upgrade by
+        // exporting on a thread of this process
+        if cfg!(target_os = "android") {
+            anyhow::bail!("videos are not made on Android yet");
+        }
         let (_, w, h) = crate::video::SIZES[d.size.min(crate::video::SIZES.len() - 1)];
         let mut cmd = Command::new(std::env::current_exe()?);
         cmd.args(["--assets"]).arg(assets).args(["--export-video", &d.entry.id, "--out"]).arg(&out).args(["--size", &format!("{w}x{h}")]);

@@ -22,6 +22,7 @@ PNG, JSON, WAV/FLAC and AVI.
 | `web/` | Browser build: `index.html` and the build / compress / serve / preload scripts |
 | `fuzz/` | cargo-fuzz targets for everything read from files or the network |
 | `vendor/matchbox_socket/` | Patched matchbox_socket (rustls instead of the default TLS backend) |
+| `vendor/winit/` | Patched winit (a gamepad's stick and d-pad on Android) |
 | `check.sh` | Formatting, clippy, tests, `cargo deny` and fuzzing, also run by the git hooks |
 
 ## Assets
@@ -81,6 +82,13 @@ openkumite --mode vs --ai 1,2 --ai-style 1:rushdown,2:random   # the AI plays se
 ```
 
 Headless example tools live in `crates/kumite_game/examples/` (`cpu_match`, `trace`, `ko_trace`, ...).
+
+## Android build
+
+`sh packaging/android/build.sh` builds `target/android/openkumite.apk` for arm64 phones and tablets (needs
+`ANDROID_HOME`, `ANDROID_NDK_HOME`, cargo-ndk and a JDK). Install it, then choose the folder kumite_converter wrote (or
+a .zip of it) on the app's first screen: the app copies it once. It plays with the on-screen pad or a gamepad. For
+developers, `adb push <assets> /sdcard/Android/data/io.github.openkumite/files/` puts the data in place directly.
 
 ## Browser build
 

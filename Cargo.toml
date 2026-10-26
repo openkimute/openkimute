@@ -60,9 +60,10 @@ strip = true
 [profile.web]
 inherits = "dist"
 
-# matchbox_socket with rustls for wss signalling (vendor/matchbox_socket/Cargo.toml says why)
+# matchbox_socket with rustls for wss signalling, winit with a gamepad's d-pad on Android (vendor/*/Cargo.toml say why)
 [patch.crates-io]
 matchbox_socket = { path = "vendor/matchbox_socket" }
+winit = { path = "vendor/winit" }
 
 # ggrs reckons the ping from a peer's quality reply with plain arithmetic: a lying one overflows, a panic where
 # overflow is checked (release builds wrap, harmlessly)

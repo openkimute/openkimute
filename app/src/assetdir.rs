@@ -26,6 +26,19 @@ pub fn find(args: &[String], env: &dyn Fn(&str) -> Option<OsString>, exe: Option
     )
 }
 
+/// A conversion copied into `dir` (Android's import of the folder or the .zip the player chose): `dir` itself when it
+/// holds manifest.json, else its folder that does (a .zip of the folder); checked as the game reads it (its format:
+/// [`kumite_assets::Assets::new`]).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn conversion_in(dir: &Path) -> anyhow::Result<PathBuf> {
+    let mut inner: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    inner.sort();
+    let found = std::iter::once(dir.to_path_buf()).chain(inner).find(|d| d.join("manifest.json").is_file());
+    let found = found.ok_or_else(|| anyhow::anyhow!("That folder has no manifest.json, so it isn’t a converted game. Choose the folder kumite_converter wrote."))?;
+    kumite_assets::Assets::new(&found)?;
+    Ok(found)
+}
+
 /// A folder given by hand (`what`): without the spaces around it, `~` the home folder; one that is not there is an
 /// error (one without a conversion is [`kumite_assets::Assets::new`]'s).
 fn given(what: &str, dir: &std::ffi::OsStr, env: &dyn Fn(&str) -> Option<OsString>) -> anyhow::Result<PathBuf> {
@@ -125,5 +138,26 @@ mod tests {
             assert!(e.contains(&root.join("bin/assets").display().to_string()) && e.contains("kumite_converter"), "{e}");
         }
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_copied_conversion_found_and_checked() {
+        let dir = std::env::temp_dir().join(format!("openkumite_conversion_in_test_{}", std::process::id()));
+        let manifest = |d: &Path, format: u64| {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("manifest.json"), format!("{{\"format\": {format}}}")).unwrap();
+        };
+        // nothing converted: the player's words
+        std::fs::create_dir_all(dir.join("photos")).unwrap();
+        assert!(conversion_in(&dir).unwrap_err().to_string().contains("no manifest.json"));
+        // a .zip of the folder: the one inside; an older conversion refused
+        manifest(&dir.join("assets"), kumite_assets::FORMAT);
+        assert_eq!(conversion_in(&dir).unwrap(), dir.join("assets"));
+        manifest(&dir.join("assets"), kumite_assets::FORMAT - 1);
+        assert!(conversion_in(&dir).unwrap_err().to_string().contains("older conversion"));
+        // the folder itself first
+        manifest(&dir, kumite_assets::FORMAT);
+        assert_eq!(conversion_in(&dir).unwrap(), dir);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

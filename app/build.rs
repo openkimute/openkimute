@@ -1,5 +1,5 @@
 //! The game build's fingerprint (`OPENKUMITE_BUILD`, said in the online hello): a hash of everything two computers in a
-//! match must share: the sources of every crate of the fight and the app (main.rs mixes the fight loop with the
+//! match must share: the sources of every crate of the fight and the app (lib.rs mixes the fight loop with the
 //! screens), Cargo.lock (another version of a maths crate may round otherwise) and the manifests (features such as
 //! glam's libm, the profiles). Line ends are left out (a Windows checkout converts them). A different build would
 //! desync mid-match; it is refused at the hello instead. (A debug and a release build of one tree share it: debug

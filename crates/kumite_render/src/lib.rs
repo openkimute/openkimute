@@ -302,6 +302,8 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 pub struct Renderer {
+    /// What the window surfaces are made with (Android makes its window again after the background).
+    instance: wgpu::Instance,
     /// Window surface, or `None` when rendering offscreen (tests, screenshots).
     surface: Option<wgpu::Surface<'static>>,
     /// Offscreen colour target (headless mode).
@@ -574,6 +576,7 @@ impl Renderer {
         let blob_pipeline = make("blob shadows", &static_layout, "vs_world", "fs_blob", &static_vb, false, true, tri, Some(wgpu::BlendState { color: times, alpha: keep }));
 
         Ok(Self {
+            instance,
             surface,
             offscreen,
             device,
@@ -698,6 +701,17 @@ impl Renderer {
             None => self.offscreen = Some(make_offscreen(&self.device, &self.config)),
         }
         self.depth = make_depth(&self.device, &self.config);
+    }
+
+    /// The window's surface dropped (None: Android took the window away, the app in the background; draw nothing
+    /// meanwhile) or made again for its new window, at its size. The GPU's resources stay.
+    pub fn set_surface(&mut self, target: Option<wgpu::SurfaceTarget<'static>>, width: u32, height: u32) -> Result<()> {
+        self.surface = None;
+        if let Some(t) = target {
+            self.surface = Some(self.instance.create_surface(t)?);
+            self.resize(width, height);
+        }
+        Ok(())
     }
 
     pub fn device(&self) -> &wgpu::Device {

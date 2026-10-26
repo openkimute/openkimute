@@ -193,7 +193,7 @@ impl View {
                     if toggle(ui, self.file.kept, "★ Keep", "Keep this replay: it is never deleted to make room (K)") {
                         req.push(Request::Keep(!self.file.kept));
                     }
-                    if cfg!(not(target_arch = "wasm32")) && ui.button("Video…").on_hover_text("Make it an MP4 video (V)").clicked() {
+                    if cfg!(not(any(target_arch = "wasm32", target_os = "android"))) && ui.button("Video…").on_hover_text("Make it an MP4 video (V)").clicked() {
                         req.push(Request::Video);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -390,7 +390,7 @@ impl Browser {
                         action = Some(BrowserAction::Import);
                     }
                     let playable = self.entries.get(self.cursor).is_some_and(|e| self.playable(e));
-                    if cfg!(not(target_arch = "wasm32")) && ui.add_enabled(playable, egui::Button::new("Video…")).on_hover_text("Make it an MP4 video").clicked() {
+                    if cfg!(not(any(target_arch = "wasm32", target_os = "android"))) && ui.add_enabled(playable, egui::Button::new("Video…")).on_hover_text("Make it an MP4 video").clicked() {
                         action = self.entries.get(self.cursor).map(|e| BrowserAction::Video(Box::new(e.clone())));
                     }
                     if ui.add_enabled(has, egui::Button::new("Delete")).on_hover_text("Button 2, twice").clicked() {

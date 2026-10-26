@@ -132,6 +132,16 @@ impl Audio {
         self.muted
     }
 
+    /// The music held (Android: the game in the background) or going on.
+    #[cfg(target_os = "android")]
+    pub fn pause(&self, paused: bool) {
+        match &self.music {
+            Some(p) if paused => p.pause(),
+            Some(p) => p.play(),
+            None => {}
+        }
+    }
+
     /// Music quieter while paused.
     pub fn duck(&mut self, ducked: bool) {
         // (the game says it every step: noted when it changes)

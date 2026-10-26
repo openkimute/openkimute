@@ -4,8 +4,8 @@
 
 /// What the files are, for the dialogs: its name, and its files' extension.
 pub struct Kind {
-    /// (a browser's picker filters by the extension alone)
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    /// (a browser's picker filters by the extension alone; Android has none)
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
     pub name: &'static str,
     pub ext: &'static str,
 }
@@ -15,9 +15,16 @@ pub const REPLAY: Kind = Kind { name: "OpenKumite replay", ext: "okreplay" };
 pub const VIDEO: Kind = Kind { name: "MP4 video", ext: "mp4" };
 
 /// Where the player wants a new file `name` of `kind` (None: cancelled). Native only: a browser downloads.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn save_path(name: &str, kind: &Kind) -> Option<std::path::PathBuf> {
     rfd::FileDialog::new().set_file_name(name).add_filter(kind.name, &[kind.ext]).save_file()
+}
+
+/// Android: no dialog; the file goes in the app's folder (beside the save).
+// shortcut: no system file picker (that is Java's, the Storage Access Framework), upgrade with an import/export UI
+#[cfg(target_os = "android")]
+pub fn save_path(name: &str, _kind: &Kind) -> Option<std::path::PathBuf> {
+    Some(crate::save::save_dir().join(name))
 }
 
 /// Save `bytes` as a file the player names (natively a dialog; in a browser, a download): where it went, or None when
@@ -40,7 +47,12 @@ pub fn save(name: &str, kind: &Kind, bytes: &[u8]) -> anyhow::Result<Option<Stri
 /// Ask for files of `kind` to open: natively the dialog, its files at once; in a browser the picker, its files
 /// later from [`take_opened`].
 pub fn open(kind: &Kind) -> Vec<(String, Vec<u8>)> {
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(target_os = "android")]
+    {
+        log::warn!("no file picker on Android: {} files cannot be opened", kind.ext);
+        Vec::new()
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {
         let picked = rfd::FileDialog::new().add_filter(kind.name, &[kind.ext]).pick_files().unwrap_or_default();
         picked.into_iter().filter_map(|p| Some((p.file_name()?.to_string_lossy().into_owned(), std::fs::read(&p).ok()?))).collect()

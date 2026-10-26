@@ -6,6 +6,10 @@ license.workspace = true
 version.workspace = true
 publish.workspace = true
 
+# the game; main.rs starts it, Android loads it as a shared library (packaging/android/build.sh)
+[lib]
+doctest = false
+
 [dependencies]
 kumite_fs.workspace = true
 kumite_net.workspace = true
@@ -39,17 +43,27 @@ async-compat = "0.2"
 env_logger.workspace = true
 egui-winit = "0.36"
 rodio = { version = "0.22", default-features = false, features = ["playback", "flac", "mp3", "wav"] }
-gilrs = "0.11"
-# the system's file dialogs (replays exported and imported, videos saved); on Linux the desktop's portal, no GTK
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 # replays to video (video.rs): AV1 (rav1e), Opus (pure Rust), MP4 (muxide). rav1e's assembly on ARM only: x86's
 # needs nasm to build
 rav1e = { version = "0.8", default-features = false, features = ["threading"] }
 opus-rs = "0.1"
 muxide = { version = "0.5", default-features = false }
 
-[target.'cfg(target_arch = "aarch64")'.dependencies]
+# desktops: gamepads (Android's come as key events: gamepad_android.rs), the file dialogs
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+gilrs = "0.11"
+# the system's file dialogs (replays exported and imported, videos saved); on Linux the desktop's portal, no GTK
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+
+[target.'cfg(all(target_arch = "aarch64", not(target_os = "android")))'.dependencies]
 rav1e = { version = "0.8", default-features = false, features = ["threading", "asm"] }
+
+# Android (packaging/android): the game in a NativeActivity, its log in logcat, its Java side (the pickers) through
+# JNI (the version android-activity has)
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { workspace = true, features = ["android-native-activity"] }
+android_logger = "0.15"
+jni = "0.21"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ggrs = { version = "=0.13.0", features = ["wasm-bindgen"] }
