@@ -46,7 +46,7 @@ cargo run --release
 cargo run --release -- --help     # the full command line
 ```
 
-With Nix (`flake.nix`): `nix run github:openkumite/openkumite -- --assets DIR` plays without a checkout; in one,
+On Linux with Nix (`flake.nix`): `nix run github:openkumite/openkumite -- --assets DIR` plays without a checkout; in one,
 `nix develop` gives the toolchain and libraries for the commands here, `check.sh` and the browser build.
 
 The game starts at the title screen. Modes include Arcade, VS, Team Battle, Time Attack, Survival, Force,

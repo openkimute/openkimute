@@ -1,5 +1,5 @@
-# The Nix flake (flake.nix): it evaluates for every system, and builds (with the tests that run without the game data)
-# on Linux and macOS. Only when what it builds from changes.
+# The Nix flake (flake.nix, Linux only): it evaluates for both systems, and builds (with the tests that run without the
+# game data) on x86-64. Only when what it builds from changes.
 name: nix
 
 on:
@@ -19,11 +19,7 @@ concurrency:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
