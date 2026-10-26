@@ -84,6 +84,8 @@ mod theater;
 mod video;
 #[cfg(not(target_arch = "wasm32"))]
 mod video_export;
+#[cfg(target_os = "macos")]
+mod video_mac;
 
 use anyhow::{Context, Result};
 use art::Art;
@@ -5849,7 +5851,7 @@ fn export_video(app: &mut App, id: &str, out: &Path, (width, height): (u32, u32)
         app.debug.hush();
         app.draw();
         let img = app.renderer.as_ref().context("renderer")?.capture()?;
-        writer.frame(&img.rgba)?;
+        writer.frame(img.rgba)?;
     }
     let (events, music) = app.audio.as_ref().map_or((Vec::new(), 0.55), |a| (a.capture.as_ref().map_or_else(Vec::new, |c| c.events.clone()), a.music_volume));
     let finished = writer.finish(&video::mix(&events, all, music));

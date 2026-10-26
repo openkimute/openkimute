@@ -29,8 +29,8 @@ gltf = { version = "1.4", features = ["import", "names", "extras"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# The lints every crate takes (`[lints] workspace = true`): no unsafe code but the macOS haptics' FFI (allowed
-# there); nothing that panics in the game's code on what comes from outside (it must never crash; tests may).
+# The lints every crate takes (`[lints] workspace = true`): no unsafe code but the macOS haptics' and hardware video
+# encoder's FFI (allowed there); nothing that panics in the game's code on what comes from outside (it must never crash; tests may).
 [workspace.lints.rust]
 unsafe_code = "deny"
 

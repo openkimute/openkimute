@@ -166,9 +166,10 @@ from macOS to the browser build, to Linux and to Windows, and from Windows to ma
 **Video.** **Video…** (in the list or while one plays; native builds) makes an MP4 of a replay: 720p, 1080p, 1440p or
 4K, with or without the HUD, from the game's camera or the free camera where it is. It is rendered off-screen at 60
 frames a second whatever the computer, its sounds and music mixed from the game's own, and encoded inside the game
-(AV1 video by rav1e, Opus audio): nothing to install, and the game plays on meanwhile (the export runs in a process of
-its own, its progress and Cancel at the top left). The encoding takes its time: on an M1 Pro about 1.5x the replay's
-length at 720p and 3x at 1080p, longer at 4K. AV1 plays in current browsers, VLC and recent phones and TVs; some
+(on macOS HEVC video by the Mac's hardware encoder, elsewhere AV1 by rav1e; Opus audio): nothing to install, and the
+game plays on meanwhile (the export runs in a process of its own, its progress and Cancel at the top left). On an M1
+Pro the hardware encoder takes a quarter of the replay's length at 1080p, two thirds at 4K; AV1 takes its time: about
+1.5x the length at 720p and 3x at 1080p, longer at 4K (`OPENKUMITE_VIDEO=software` chooses it on macOS). AV1 plays in current browsers, VLC and recent phones and TVs; some
 older devices do not play it. From the command line: `openkumite --export-video ID|latest --out FILE.mp4 [--size
 1920x1080] [--no-hud] [--free-cam YAW,PITCH,DIST,X,Y,Z]`.
 `sh packaging/demo_videos.sh` records AI-vs-AI matches headless and makes each an MP4 (`--help` for its options).

@@ -67,6 +67,11 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSDate"] }
 objc2-game-controller = { version = "0.3", default-features = false, features = ["std", "GCController", "GCDevice", "GCDeviceHaptics", "objc2-core-haptics"] }
 objc2-core-haptics = { version = "0.3", default-features = false, features = ["std", "CHHapticEngine", "CHHapticEvent", "CHHapticParameter", "CHHapticPattern", "CHHapticPatternPlayer"] }
+# replays to video on the Mac's hardware HEVC encoder (video_mac.rs)
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-media = { version = "0.3", default-features = false, features = ["std", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }
+objc2-core-video = { version = "0.3", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVPixelBufferPool", "CVReturn"] }
+objc2-video-toolbox = { version = "0.3", default-features = false, features = ["std", "VTCompressionProperties", "VTCompressionSession", "VTErrors", "VTSession", "objc2-core-media", "objc2-core-video"] }
 
 [lints]
 workspace = true

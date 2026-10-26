@@ -1,6 +1,7 @@
 //! Replays made videos (native): `--export-video` plays a replay off-screen at a chosen size, a frame every game step
 //! (60 a second, however fast the computer), with the sounds it asks for noted (`audio::Capture`) and mixed after,
-//! into an MP4: AV1 video (rav1e) and Opus audio (opus-rs), the container by muxide.
+//! into an MP4: AV1 video (rav1e) and Opus audio (opus-rs), the container by muxide. On macOS the video is HEVC by the
+//! Mac's hardware encoder instead (video_mac.rs), AV1 where it does not start or `OPENKUMITE_VIDEO=software` asks.
 
 use crate::audio::Event;
 use anyhow::{Context, Result};
@@ -26,11 +27,11 @@ pub const SIZES: [(&str, u32, u32); 4] = [("720p", 1280, 720), ("1080p", 1920, 1
 /// most.
 const BUDGET: usize = 2816 << 20;
 
-/// One encoded frame: its number in the video, its OBUs, whether it is a key frame.
-struct Packet {
-    frame: u64,
-    data: Vec<u8>,
-    key: bool,
+/// One encoded frame: its number in the video, its OBUs (HEVC: Annex B), whether it is a key frame.
+pub struct Packet {
+    pub frame: u64,
+    pub data: Vec<u8>,
+    pub key: bool,
 }
 
 type Segment = std::thread::JoinHandle<Result<Vec<Packet>>>;
@@ -53,6 +54,18 @@ pub struct Writer {
     written: u64,
     /// Frames encoded so far, by all the segments (the progress).
     encoded: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The hardware encoder, instead of the segments.
+    #[cfg(target_os = "macos")]
+    hevc: Option<crate::video_mac::Encoder>,
+}
+
+/// The hardware encoder, unless `software` (`OPENKUMITE_VIDEO=software`) or it does not start (said in one line).
+#[cfg(any(target_os = "macos", test))]
+fn hardware<E>(software: bool, start: impl FnOnce() -> Result<E>) -> Option<E> {
+    if software {
+        return None;
+    }
+    start().map_err(|e| log::info!("video: {e:#}; the software encoder (AV1) instead")).ok()
 }
 
 impl Writer {
@@ -83,13 +96,20 @@ impl Writer {
         let seg_len = 60;
         let parallel = (BUDGET / (encoder + seg_len * frame)).clamp(1, cores);
         enc.max_key_frame_interval = seg_len as u64;
+        #[cfg(target_os = "macos")]
+        let hevc = hardware(std::env::var("OPENKUMITE_VIDEO").is_ok_and(|v| v == "software"), || crate::video_mac::Encoder::new(width, height));
+        #[cfg(target_os = "macos")]
+        let codec = if hevc.is_some() { muxide::api::VideoCodec::H265 } else { muxide::api::VideoCodec::Av1 };
+        #[cfg(not(target_os = "macos"))]
+        let codec = muxide::api::VideoCodec::Av1;
         let file = BufWriter::new(File::create(path).with_context(|| format!("{}", path.display()))?);
-        let mux = muxide::api::MuxerBuilder::new(file)
-            .video(muxide::api::VideoCodec::Av1, width, height, FPS as f64)
-            .audio(muxide::api::AudioCodec::Opus, RATE as u32, 2)
-            .build()
-            .map_err(|e| anyhow::anyhow!("the MP4: {e}"))?;
-        log::info!("video {width}x{height}: segments of {seg_len} frames, {parallel} at once, {} threads each", (cores / parallel).max(1));
+        let mux =
+            muxide::api::MuxerBuilder::new(file).video(codec, width, height, FPS as f64).audio(muxide::api::AudioCodec::Opus, RATE as u32, 2).build().map_err(|e| anyhow::anyhow!("the MP4: {e}"))?;
+        if codec == muxide::api::VideoCodec::Av1 {
+            log::info!("video {width}x{height}: segments of {seg_len} frames, {parallel} at once, {} threads each", (cores / parallel).max(1));
+        } else {
+            log::info!("video {width}x{height}: HEVC, the hardware encoder");
+        }
         Ok(Self {
             mux,
             config: enc,
@@ -103,15 +123,23 @@ impl Writer {
             frames: 0,
             written: 0,
             encoded: Default::default(),
+            #[cfg(target_os = "macos")]
+            hevc,
         })
     }
 
     /// The next frame: RGBA (sRGB), `width` × `height`.
-    pub fn frame(&mut self, rgba: &[u8]) -> Result<()> {
+    pub fn frame(&mut self, rgba: Vec<u8>) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if let Some(h) = self.hevc.as_mut() {
+            let packets = h.frame(rgba)?;
+            self.frames += 1;
+            return self.write(packets);
+        }
         if self.frames.is_multiple_of(self.seg_len) {
             self.start_segment()?;
         }
-        let (y, u, v) = yuv420(rgba, self.width, self.height);
+        let (y, u, v) = yuv420(&rgba, self.width, self.height);
         let planes = [y, u, v].concat();
         self.current.as_ref().context("no segment")?.send(planes).map_err(|_| anyhow::anyhow!("the video encoder stopped"))?;
         self.frames += 1;
@@ -136,9 +164,18 @@ impl Writer {
     fn write_oldest(&mut self) -> Result<()> {
         let Some(seg) = self.running.pop_front() else { return Ok(()) };
         let packets = seg.join().map_err(|_| anyhow::anyhow!("the video encoder failed"))??;
+        self.write(packets)
+    }
+
+    /// Packets into the MP4, in order.
+    fn write(&mut self, packets: Vec<Packet>) -> Result<()> {
         for p in packets {
             self.mux.write_video(p.frame as f64 / FPS as f64, &p.data, p.key).map_err(|e| anyhow::anyhow!("the MP4: {e}"))?;
             self.written += 1;
+        }
+        #[cfg(target_os = "macos")]
+        if self.hevc.is_some() {
+            self.encoded.store(self.written, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(())
     }
@@ -150,6 +187,11 @@ impl Writer {
 
     /// The last frames, then the audio (48 kHz stereo, interleaved), and the file finished.
     pub fn finish(mut self, audio: &[f32]) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if let Some(h) = self.hevc.as_mut() {
+            let packets = h.finish()?;
+            self.write(packets)?;
+        }
         self.current = None;
         while !self.running.is_empty() {
             self.write_oldest()?;
@@ -209,11 +251,27 @@ fn encode_segment(
     Ok(out)
 }
 
-/// RGBA (sRGB) to BT.709 limited-range Y, and U and V at half the size each way.
-fn yuv420(rgba: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+/// RGBA (sRGB) to BT.709 limited-range Y, and U and V at half the size each way: in bands of rows on every core (on
+/// one at 4K, most of a frame's time with the hardware encoder).
+pub fn yuv420(rgba: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let (cw, ch) = (w / 2, h / 2);
     let mut y = vec![0u8; w * h];
     let (mut u, mut v) = (vec![0u8; cw * ch], vec![0u8; cw * ch]);
+    // (chroma rows a band, each two of Y)
+    let rows = ch.div_ceil(std::thread::available_parallelism().map_or(4, |n| n.get())).max(1);
+    std::thread::scope(|s| {
+        let (ys, cs) = ((rows * 2 * w).max(1), (rows * cw).max(1));
+        for (((p, y), u), v) in rgba.chunks(ys * 4).zip(y.chunks_mut(ys)).zip(u.chunks_mut(cs)).zip(v.chunks_mut(cs)) {
+            s.spawn(move || yuv420_band(p, w, y, u, v));
+        }
+    });
+    (y, u, v)
+}
+
+/// An even number of rows of RGBA to their Y, U and V.
+fn yuv420_band(rgba: &[u8], w: usize, y: &mut [u8], u: &mut [u8], v: &mut [u8]) {
+    let (cw, h) = (w / 2, y.len() / w.max(1));
+    let ch = u.len() / cw.max(1);
     let px = |x: usize, row: usize| {
         let i = (row * w + x) * 4;
         (f32::from(rgba[i]), f32::from(rgba[i + 1]), f32::from(rgba[i + 2]))
@@ -236,7 +294,6 @@ fn yuv420(rgba: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
             v[row * cw + x] = (128.0 + (r - yy) / 1.5748 * 224.0 / 255.0).round().clamp(0.0, 255.0) as u8;
         }
     }
-    (y, u, v)
 }
 
 /// A sound file at 48 kHz stereo, interleaved.
@@ -328,6 +385,19 @@ mod tests {
         let (y, _, v) = yuv420(&red, 2, 2);
         assert_eq!(y[0], 63);
         assert_eq!(v[0], 240);
+        // (in bands as in one)
+        let (w, h) = (6, 34);
+        let img: Vec<u8> = (0..w * h * 4).map(|i| (i * 37 % 251) as u8).collect();
+        let (mut y, mut u, mut v) = (vec![0; w * h], vec![0; w * h / 4], vec![0; w * h / 4]);
+        yuv420_band(&img, w, &mut y, &mut u, &mut v);
+        assert_eq!(yuv420(&img, w, h), (y, u, v));
+    }
+
+    #[test]
+    fn the_software_encoder_when_asked_or_the_hardware_one_fails() {
+        assert_eq!(hardware(false, || Ok(1)), Some(1));
+        assert_eq!(hardware(true, || -> Result<i32> { panic!("not tried when the software one is asked for") }), None);
+        assert_eq!(hardware(false, || -> Result<i32> { anyhow::bail!("no hardware encoder") }), None);
     }
 
     #[test]
