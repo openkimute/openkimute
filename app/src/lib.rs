@@ -3320,6 +3320,10 @@ impl App {
         let (soldier_char, soldier_record) = soldier_of(0)?;
         let mut game = Game::load(&self.assets, [player_model, soldier_record])?;
         game.round_frames = run.clock;
+        // Force co-op's balance (the game's own numbers for one player)
+        if run.partner.is_some() {
+            game.handicap[0] = kumite_game::force::COOP_PLAYER_HEALTH;
+        }
         (game.ko_collapse, game.fight.ko_collapse) = (false, false);
         let mut bout = Bout::new(game, self.ai.clone(), 1, false);
         bout.force = true;
@@ -3562,7 +3566,7 @@ impl App {
     /// it is done), then the next stage or the results; a lost one is GAME OVER.
     fn force_over(&mut self, winner: Option<usize>, start: bool) {
         let Some(run) = self.force.as_mut() else { return };
-        if winner == Some(0) {
+        if winner == Some(0) && run.stage.as_ref().is_some_and(|s| force_cleared(s.state, s.tally_done)) {
             run.clear_frames += 1;
             let done = run.stage.as_ref().is_some_and(|s| s.tally_done);
             if !(done && (run.clear_frames >= 300 || start)) {
@@ -4922,12 +4926,27 @@ impl ForceCtx {
 /// bosses beside it, none twice); for fewer players, the first of those for more.
 fn force_boss_picks(data: &kumite_game::force::ForceData, ctx: &ForceCtx, first: (usize, usize), players: usize) -> Vec<(usize, usize)> {
     let mut picks = vec![first];
+    let n = data.final_index().max(1);
+    let all = data.boss_characters();
+    let new = |c: usize, picks: &[(usize, usize)]| picks.iter().all(|&(p, _)| p != c);
     for j in 1..players {
-        let (c, k) = data.boss(ctx.selection, ctx.player_char, (ctx.index + j) % data.final_index().max(1));
-        let k = if picks.contains(&(c, k)) { k + 1 } else { k };
-        picks.push((c, k));
+        // the next stages' bosses in turn, the first one not in the fight yet; a route of one boss (the Tekken 2
+        // players') any of Force's bosses, from one by the stage on (never the same character twice)
+        let boss = |o: usize| data.boss(ctx.selection, ctx.player_char, (ctx.index + j + o) % n);
+        let other = || (0..all.len()).map(|o| all[(ctx.index * 3 + j + o) % all.len()]).find(|&c| new(c, &picks)).map(|c| (c, usize::from(c == ctx.player_char)));
+        let pick = (0..n).map(boss).find(|&(c, _)| new(c, &picks)).or_else(other).unwrap_or_else(|| {
+            let (c, k) = boss(0);
+            (c, if picks.contains(&(c, k)) { k + 1 } else { k })
+        });
+        picks.push(pick);
     }
     picks
+}
+
+/// A Force stage won (its tally, 7; the final stage's end, 10): a round won before that is the clock run out, and
+/// the run is over as after a K.O. (it used to wait for a tally that never comes).
+fn force_cleared(state: u8, tally_done: bool) -> bool {
+    state == 7 || state == 10 || tally_done
 }
 
 /// A character's actor, loaded once (Force's bosses: a rollback runs a frame again, the load comes from here).
@@ -4954,7 +4973,8 @@ fn force_sim(
 ) -> Vec<kumite_game::force::ForceEvent> {
     use kumite_game::force::ForceEvent;
     let fighting = bout.phase == Phase::Fight;
-    let won = matches!(bout.phase, Phase::RoundOver { winner: Some(0) } | Phase::MatchOver { winner: Some(0) });
+    // (won by a K.O.: the clock run out, the boss still standing, is no clear)
+    let won = matches!(bout.phase, Phase::RoundOver { winner: Some(0) } | Phase::MatchOver { winner: Some(0) }) && !matches!(bout.game.fight.state, kumite_sim::RoundState::TimeUp { .. });
     if ko_boss && st.boss_phase && fighting {
         bout.game.fight.fighters[1].health = 0;
     }
@@ -4980,6 +5000,7 @@ fn force_sim(
                         }
                         bout.set_cpu(1, Some((d, l)));
                         events.extend(std::mem::take(&mut st.events));
+                        log::info!("Force: bosses {picks:?}");
                     } else {
                         log::warn!("the Force bosses {picks:?} did not all load");
                     }
@@ -6865,7 +6886,8 @@ fn new_app(root: std::path::PathBuf, args: Vec<String>) -> Result<Option<App>> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(path) = arg("--shot") {
         let frames = arg("--frames").and_then(|f| f.parse().ok()).unwrap_or(0);
-        app.seed = 1;
+        // (the same picture each run: the seed 1, but --seed's)
+        app.seed = arg("--seed").and_then(|n| n.parse().ok()).unwrap_or(1);
         let screen = arg("--screen");
         return screenshot(&mut app, &path, frames, flag("--ui"), screen.as_deref()).map(|()| None);
     }
@@ -6895,6 +6917,16 @@ fn run(root: std::path::PathBuf, args: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// A Force round won while the stage still runs (soldiers 0, 1; the boss 6; the final stage's fight 9) is the
+    /// clock run out: GAME OVER; only a stage at its tally (7, or the final stage's 10) is cleared.
+    #[test]
+    fn a_force_round_won_before_the_stage_is_clear_is_the_clock_run_out() {
+        for state in [0, 1, 3, 4, 5, 6, 8, 9] {
+            assert!(!super::force_cleared(state, false), "state {state}: time up, not a clear");
+        }
+        assert!(super::force_cleared(7, false) && super::force_cleared(10, false) && super::force_cleared(6, true));
+    }
+
     use super::*;
 
     /// A CPU-vs-CPU match on the test assets, with its HUD and the sound data (None: no test assets).

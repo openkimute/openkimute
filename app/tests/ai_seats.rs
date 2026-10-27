@@ -69,3 +69,72 @@ fn a_force_co_op_of_two_ais_replays_as_recorded() {
     let mode = ["--mode", "force", "--fighters", "paul,law", "--ai", "1,2", "--ai-style", "1:thrower,2:rushdown", "--coop"];
     an_ai_match_replays_as_recorded(&mode, "30000", r#""ai":[{"style":"Thrower","difficulty":2,"level":9},{"style":"Rushdown","difficulty":2,"level":9},null,null]"#, "force");
 }
+
+/// The game's log of one headless run (its own save folder), or None without a GPU / the game data.
+fn log_of(name: &str, args: &[&str]) -> Option<String> {
+    let assets = assets()?;
+    let save = std::env::temp_dir().join(format!("openkumite_ai_{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&save);
+    std::fs::create_dir_all(&save).unwrap();
+    let shot = save.join("shot.png").to_string_lossy().into_owned();
+    let mut a = args.to_vec();
+    a.extend(["--shot", &shot]);
+    let log = run(&assets, &save, &a);
+    let _ = std::fs::remove_dir_all(&save);
+    log.contains("--mode Force").then_some(log)
+}
+
+/// Force's co-op: a boss a player, never the same character twice (Jun's stage 2 had two Heihachis: the second
+/// was the next stage's boss, the same one in another costume).
+#[test]
+fn the_co_op_bosses_are_different_characters() {
+    let Some(log) = log_of("bosses", &["--mode", "force", "--fighters", "t2:jun,jin", "--coop", "--force-stage", "2", "--boss", "--ai", "1,2", "--frames", "300"]) else {
+        eprintln!("skipping: no Force run");
+        return;
+    };
+    let line = log.lines().find_map(|l| l.split_once("Force: bosses ").map(|(_, b)| b.to_string())).expect("the bosses picked");
+    let chars: Vec<&str> = line.trim_matches(['[', ']']).split("), (").map(|p| p.trim_matches(['(', ')']).split(',').next().unwrap().trim()).collect();
+    assert_eq!(chars.len(), 2, "a boss each: {line}");
+    assert_ne!(chars[0], chars[1], "two different bosses: {line}");
+}
+
+/// `--ai-style random` draws from the game's seed: `--seed` gives other styles (headless runs fixed it at 1).
+#[test]
+fn random_styles_follow_the_seed() {
+    let styles = |seed: &str| {
+        log_of(&format!("seed{seed}"), &["--mode", "force", "--fighters", "paul,law", "--coop", "--ai", "1,2", "--ai-style", "random", "--seed", seed, "--frames", "10"])
+            .map(|l| l.lines().find(|l| l.contains("--ai: ")).unwrap().to_string())
+    };
+    let (Some(a), Some(b), Some(a2)) = (styles("2"), styles("3"), styles("2")) else {
+        eprintln!("skipping: no Force run");
+        return;
+    };
+    assert_ne!(a.split("--ai: ").nth(1), b.split("--ai: ").nth(1), "seeds 2 and 3 draw other styles");
+    assert_eq!(a.split("--ai: ").nth(1), a2.split("--ai: ").nth(1), "the same seed, the same styles");
+}
+
+/// Force co-op's stage 2 to its end (a pair of AIs): in its boss fight a second boss's hit once took Jun out of
+/// her throw; the boss she held played her move, which only the throw ends, and stood held with the clock
+/// stopped for good. The stage now ends (here cleared) and its replay plays to the state recorded.
+#[test]
+fn a_co_op_boss_fight_with_a_throw_cut_short_ends() {
+    let Some(assets) = assets() else { return };
+    let save = std::env::temp_dir().join(format!("openkumite_ai_force_throw_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&save);
+    std::fs::create_dir_all(&save).unwrap();
+    let shot = save.join("shot.png").to_string_lossy().into_owned();
+    let mode = ["--mode", "force", "--fighters", "t2:jun,t2:lei", "--coop", "--force-stage", "2", "--ai", "1,2", "--ai-style", "1:defensive,2:defensive"];
+    let mut args = mode.to_vec();
+    args.extend(["--shot", &shot, "--frames", "10300"]);
+    let log = run(&assets, &save, &args);
+    if !log.contains("--mode Force") {
+        eprintln!("skipping: no Force run (a GPU?)");
+        return;
+    }
+    let id = log.lines().find_map(|l| l.split_once("replay ").and_then(|(_, r)| r.split_once(" saved: ")).map(|(id, _)| id.to_string())).expect("the stage ended and its replay was saved");
+    let file = std::fs::read_to_string(save.join("replays").join(format!("{id}.okreplay"))).unwrap();
+    assert!(file.contains(r#""result":"STAGE CLEAR""#), "the stage is cleared");
+    let log = run(&assets, &save, &["--replay", &id, "--shot", &shot, "--frames", "10300"]);
+    assert!(log.contains("the state as recorded: Some(true)"), "its replay plays to the state recorded:\n{log}");
+    let _ = std::fs::remove_dir_all(&save);
+}

@@ -205,6 +205,14 @@ impl ForceData {
     }
 
     /// The boss of stage `i` for the player's selection (char * 4 + costume) (0x800B2658): character, costume.
+    /// Every character a stage's boss can be, by any route (in id order).
+    pub fn boss_characters(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = self.boss_routes.by_selection.iter().flatten().filter_map(|&[c, _]| usize::try_from(c).ok()).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+
     pub fn boss(&self, selection: usize, player_char: usize, i: usize) -> (usize, usize) {
         let [ch, cos] = self.boss_routes.by_selection.get(selection).and_then(|r| r.get(i % r.len().max(1))).copied().unwrap_or(self.boss_routes.otherwise);
         let cos = if cos >= 0 {
@@ -215,6 +223,25 @@ impl ForceData {
             usize::from(selection & 3 != 0)
         };
         (ch.max(0) as usize, cos)
+    }
+}
+
+/// Force with more players (OpenKumite's own; the game's Force is one player's, kept as it is): the balance that
+/// lets a pair of CPU players finish its stages (measured on stages 2, 3, 4 with random characters and styles:
+/// 22, 22 and 18 of 24 cleared, against none of 60 with the solo numbers). The soldiers in play at once: one a
+/// player (two a player, four at once, overran the pair every time).
+pub const COOP_SOLDIERS_A_PLAYER: usize = 1;
+/// ... the players' full health, in percent of the game's (`Game::handicap`, set by the app as a co-op stage loads).
+pub const COOP_PLAYER_HEALTH: i32 = 300;
+/// ... the bosses' health in percent (a boss a player, each the stage's).
+const COOP_BOSS_HEALTH: i32 = 60;
+
+/// A boss's health `hp` with `players` players: in co-op [`COOP_BOSS_HEALTH`] of it.
+fn coop_boss_health(hp: i32, players: usize) -> i32 {
+    if players > 1 {
+        (hp * COOP_BOSS_HEALTH / 100).max(1)
+    } else {
+        hp
     }
 }
 
@@ -425,7 +452,7 @@ impl ForceStage {
 
     /// How many soldier slots are in play: two, or (more than one player) two a player.
     fn live_slots(&self, game: &Game) -> usize {
-        (2 * game.players().len()).clamp(2, self.slots.len())
+        (COOP_SOLDIERS_A_PLAYER * game.players().len()).clamp(2, self.slots.len())
     }
 
     /// The players are more than two (or two with the widened melee): the soldiers' places for all of them.
@@ -489,6 +516,7 @@ impl ForceStage {
             self.run_slot(game, k);
         }
         self.run_chickens(game);
+        self.turn_t2(game);
         self.retarget(game);
         self.bounds(game);
         self.update_camera(game);
@@ -687,6 +715,12 @@ impl ForceStage {
                 }
             }
             4 => {
+                // (the same kind again reuses the actor: one that went down held in a throw still plays its
+                // thrower's victim move, with no thrower to end it, so it never moves again; a fresh one instead)
+                if self.fighter_ref(game, k).is_some_and(|f| f.current.bank == kumite_sim::data::Bank::Partner) {
+                    let actor = self.soldiers[self.slots[k].kind.min(1)].clone();
+                    game.set_actor(self.slot_actor(k), &actor);
+                }
                 let (x, z) = self.slots[k].spawn;
                 let player = game.fight.fighters[0].root();
                 if let Some(f) = self.fighter(game, k) {
@@ -792,6 +826,30 @@ impl ForceStage {
                     }
                 }
                 _ => {}
+            }
+        }
+    }
+
+    /// A player of Tekken 2's movesets (`t2…` moves: their stance and walks do not track) with no one to fight turns
+    /// to the way on, as a Tekken 3 one's stance does (OpenKumite's own: the game's Force has no Tekken 2 players).
+    fn turn_t2(&self, game: &mut Game) {
+        const STEP: f32 = 0.12;
+        for i in game.players() {
+            let o = game.fight.opponent_index(i);
+            if game.fight.actor(o).is_some_and(|a| !a.inactive) {
+                continue;
+            }
+            let data = game.fight.data.clone();
+            let way = game.fight.screen_right;
+            let Some(f) = game.fight.actor_mut(i) else { continue };
+            if kumite_sim::ai::sidesteps(f, &data) || f.health <= 0 {
+                continue;
+            }
+            let to = way.x.datan2(way.z);
+            let d = (to - f.yaw + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            if d.abs() > 0.01 {
+                f.yaw += d.clamp(-STEP, STEP);
+                f.root_yaw = f.yaw;
             }
         }
     }
@@ -942,6 +1000,7 @@ impl ForceStage {
         }
         game.set_actor(1, actor);
         let hp = self.data.health.get(i).map_or(130, |h| h[4]);
+        let hp = coop_boss_health(hp, game.players().len());
         let x = self.cam_x as f32 + 4096.0;
         let player = game.fight.fighters[0].root();
         let f = &mut game.fight.fighters[1];
@@ -978,6 +1037,7 @@ impl ForceStage {
         let i = self.index.min(self.data.final_index());
         // the others beside it, spread across the line (actor 2, then the wider melee's 6..)
         let hp = self.data.health.get(i).map_or(130, |h| h[4]);
+        let hp = coop_boss_health(hp, game.players().len());
         let x = self.cam_x as f32 + 4096.0;
         let side = self.route().map_or(1100.0, |r| (r.half_width * UNITS * 0.6).min(1100.0));
         let player = game.fight.fighters[0].root();

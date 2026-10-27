@@ -245,6 +245,8 @@ impl Melee {
             f.early_end = if self.fight.ball_rules { gd.ball.end(f.alias) } else { None };
         }
         let frozen: Vec<bool> = self.actors.iter().map(|f| f.freeze > 0).collect();
+        // (each one's move frame before this step: a throw's victim that does not move on is held for good)
+        let frame_before: Vec<u32> = self.actors.iter().map(|f| f.frame).collect();
         let fighting = self.state == MeleeState::Fighting;
         for i in 0..n {
             if self.actors[i].inactive {
@@ -266,7 +268,7 @@ impl Melee {
             self.on_pair(i, j, |f| f.link(&gd, 0));
         }
         // facing, after every actor's logic, against where its opponent is now
-        for (i, frozen) in frozen.into_iter().enumerate() {
+        for (i, &frozen) in frozen.iter().enumerate() {
             let (root, evasive) = self.aim(i);
             let f = &mut self.actors[i];
             (f.opponent.root, f.opponent.evasive) = (root, evasive);
@@ -286,6 +288,17 @@ impl Melee {
         self.links.retain(|&(a, b, c)| {
             // (or one of them is out of play, a Force soldier gone: it steps no more, so never leaves its move)
             let over = (self.actors[a].current != c[0] && self.actors[b].current != c[1]) || self.actors[a].inactive || self.actors[b].inactive;
+            // the thrower out of its throw while the one thrown, in the thrower's move, starts it again each frame
+            // (from its first frame to its second and back): only the throw ends that move, so it stayed held, the
+            // clock stopped, for good (seen in Force co-op's melee, never in a fight of two); the throw is over and
+            // it stands again. A victim really in a throw plays its move on, past its second frame, and is left alone
+            let left = [self.actors[a].current != c[0], self.actors[b].current != c[1]];
+            let stuck = |k: usize| self.actors[k].current.bank == crate::data::Bank::Partner && !frozen[k] && frame_before[k] <= 1 && self.actors[k].frame <= 2;
+            let held = [(b, left[0]), (a, left[1])].into_iter().find(|&(k, thrower_left)| thrower_left && stuck(k));
+            if let (false, Some((k, _))) = (over, held) {
+                self.actors[k].play(Current { bank: crate::data::Bank::Own, index: 0 });
+            }
+            let over = over || held.is_some();
             if over {
                 for k in [a, b] {
                     self.actors[k].locked = false;

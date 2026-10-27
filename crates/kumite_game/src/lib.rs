@@ -639,7 +639,8 @@ impl Game {
     /// Force's co-op: the second player joins as `actor` beside the player (or, down, gets up there
     /// again at full health).
     pub fn join_partner(&mut self, actor: &Actor) {
-        let max = self.fight.data.max_health;
+        // (1P's full health, Force co-op's balance: 2P's the same)
+        let max = self.fight.data.max_health * self.handicap[0] / 100;
         let p = &self.fight.fighters[0];
         let pos = p.position + Vec3::new(-400.0, 0.0, 900.0);
         let mut f = kumite_sim::Fighter::new(actor.moveset.clone(), max, pos, p.yaw, p.side);

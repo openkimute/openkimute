@@ -727,7 +727,7 @@ fn to_pad(out: u16, facing_right: bool) -> Pad {
 
 /// A CPU Force player's own moves over the routine (OpenKumite's own; None: the routine fights its foe): a chicken
 /// when hurt (the lowest player hurt takes the nearest), on along the stage while no soldier is near (alone along
-/// its middle line, in co-op no further than 600 ahead of the partner), out to the side from between two soldiers
+/// its middle line, in co-op a lane either side of it and no further than 600 ahead of the partner), out to the side from between two soldiers
 /// still coming, to a soldier nobody takes on while the partner has my foe. Down or in the air, the routine gets
 /// up. Draws nothing from the random streams.
 fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
@@ -746,7 +746,9 @@ fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
     if hurt(me) {
         let mut players: Vec<usize> = (0..f.actor_count()).filter(|&i| Fight::is_player(i) && standing(i).is_some_and(hurt)).collect();
         players.sort_by_key(|&i| (standing(i).map_or(0, |a| a.health), i));
-        let mut left = s.pickups.to_vec();
+        // (one that cannot sidestep only reaches the chickens on its own line, within the pickup's 500)
+        let deep = |c: &glam::Vec3| flat(*c - p).dot(glam::Vec3::Y.cross(f.screen_right)).abs();
+        let mut left: Vec<glam::Vec3> = s.pickups.iter().copied().filter(|c| sidesteps(me, sight.gd) || deep(c) < 400.0).collect();
         for i in players {
             let Some(k) = (0..left.len()).min_by(|&a, &b| dist2(left[a], pos(i)).total_cmp(&dist2(left[b], pos(i)))) else { break };
             let c = left.swap_remove(k);
@@ -760,7 +762,16 @@ fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
     if near.is_empty() || sight.op.inactive {
         let ahead = |q: glam::Vec3| q.dot(f.screen_right);
         let on = partners.iter().map(|&i| ahead(pos(i)) + 600.0 - ahead(p)).fold(1500.0, f32::min);
-        let from = if partners.is_empty() { glam::Vec3::new(p.x, 0.0, 0.0) } else { p };
+        // (along the middle line: the players stay within the camera's view, narrow at the stage's front and back,
+        // so a walk on by an edge stops at the view's side for good; in co-op a lane either side of it, 1P's and 2P's)
+        let lane = if partners.is_empty() {
+            0.0
+        } else if s.me == 0 {
+            -400.0
+        } else {
+            400.0
+        };
+        let from = glam::Vec3::new(p.x, 0.0, lane);
         return Some(force_go(me, from + f.screen_right * on, f));
     }
     // the two nearest soldiers on either side, both still over 700 away: out of their line, so both come from
@@ -787,13 +798,18 @@ fn force_move(sight: &Sight, s: &ForceSight) -> Option<Pad> {
     None
 }
 
+/// Tekken 2's movesets (their own moves `t2…`) have no sidestep: up jumps, down crouches; they only walk along.
+pub fn sidesteps(me: &Fighter, gd: &GameData) -> bool {
+    !me.moves(gd, crate::data::Bank::Own).moves.first().is_some_and(|m| m.anim.starts_with("t2"))
+}
+
 /// The pad that takes a Force player towards `to`: walks and runs along the stage, sidesteps (a tap every
 /// sixth frame: held up jumps, held down crouches) across it.
 fn force_go(me: &Fighter, to: glam::Vec3, f: &crate::Fight) -> Pad {
     let d = to - me.root();
     // (the screen's right and into the screen: up)
     let (along, deep) = (d.dot(f.screen_right), d.dot(glam::Vec3::Y.cross(f.screen_right)));
-    if deep.abs() > 300.0 && deep.abs() > along.abs() * 0.5 {
+    if sidesteps(me, &f.data) && deep.abs() > 300.0 && deep.abs() > along.abs() * 0.5 {
         let tap = f.frame.is_multiple_of(6);
         return Pad { up: tap && deep > 0.0, down: tap && deep < 0.0, ..Pad::default() };
     }

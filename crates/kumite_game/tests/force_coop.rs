@@ -141,3 +141,86 @@ fn the_sounds_and_effects_skip_opponents_past_the_four_bodies() {
         vfx.step(&bout.game);
     }
 }
+
+/// A soldier that went down held in a throw (still in its thrower's victim move, bank Partner) comes back as a fresh
+/// one when its slot spawns the same kind again: before, it kept that move with no thrower to end it and stood
+/// frozen out of reach, so the stage waited for it until the clock ran out.
+#[test]
+fn a_soldier_that_went_down_in_a_throw_comes_back_fresh() {
+    let Some(a) = assets() else { return };
+    let data: Arc<ForceData> = Arc::new(kumite_sim::data::load(&a.root.join("gamedata/force.json")).unwrap());
+    let costumes = data.soldier_costumes[0];
+    let soldiers = [0, 1].map(|k| Actor::load(&a, 259 + 4 * costumes[k].min(3)).unwrap());
+    let game = Game::load(&a, [MODEL_131, 259 + 4 * costumes[0].min(3)]).unwrap();
+    let mut bout = Bout::new(game, kumite_game::ai_data(&a).unwrap(), 1, false);
+    bout.force = true;
+    let mut st = ForceStage::new(data, 0, soldiers, 7 * 4, 7, 0, 0, 0, 0);
+    st.setup(&mut bout.game);
+    // slot 0's soldier in a throw victim's move, then the slot spawns the same kind again (state 4)
+    let actor = st.slot_actor(0);
+    bout.game.fight.actor_mut(actor).unwrap().current = kumite_sim::Current { bank: kumite_sim::data::Bank::Partner, index: 0 };
+    st.slots[0].state = 4;
+    st.step(&mut bout.game, true, false);
+    let f = bout.game.fight.actor(actor).unwrap();
+    assert!(!f.inactive && f.health > 0, "the soldier is in play");
+    assert_ne!(f.current.bank, kumite_sim::data::Bank::Partner, "a fresh soldier, not one still held in the throw");
+}
+
+/// Tekken 2's movesets (Bruce here) do not turn to a target out of play: with no soldier about, Force turns such
+/// a player to the way on, as a Tekken 3 stance does (before, one turned away walked "forward" into the camera's
+/// side for good).
+#[test]
+fn a_tekken_2_player_with_no_one_to_fight_turns_to_the_way_on() {
+    let Some(a) = assets() else { return };
+    const T2_BRUCE: usize = 940;
+    let data: Arc<ForceData> = Arc::new(kumite_sim::data::load(&a.root.join("gamedata/force.json")).unwrap());
+    let costumes = data.soldier_costumes[0];
+    let soldiers = [0, 1].map(|k| Actor::load(&a, 259 + 4 * costumes[k].min(3)).unwrap());
+    let game = Game::load(&a, [T2_BRUCE, 259 + 4 * costumes[0].min(3)]).unwrap();
+    let mut bout = Bout::new(game, kumite_game::ai_data(&a).unwrap(), 1, false);
+    bout.force = true;
+    let mut st = ForceStage::new(data, 0, soldiers, 34 * 4, 34, 0, 0, 0, 0);
+    st.setup(&mut bout.game);
+    let away = -std::f32::consts::FRAC_PI_2;
+    let f = &mut bout.game.fight.fighters[0];
+    (f.yaw, f.root_yaw) = (away, away);
+    for _ in 0..60 {
+        bout.step([Pad::default(); 2]);
+        st.step(&mut bout.game, false, false);
+    }
+    let f = &bout.game.fight.fighters[0];
+    let facing = glam::Vec3::new(f.yaw.sin(), 0.0, f.yaw.cos());
+    assert!(facing.dot(bout.game.fight.screen_right) > 0.9, "faces the way on: yaw {}", f.yaw);
+}
+
+/// Force co-op's balance: one soldier a player in play at once (two a player, four at once, overran a pair of CPU
+/// players on every stage past the first), with the stage's soldiers coming on as before.
+#[test]
+fn co_op_has_a_soldier_a_player_in_play() {
+    let Some(a) = assets() else { return };
+    let data: Arc<ForceData> = Arc::new(kumite_sim::data::load(&a.root.join("gamedata/force.json")).unwrap());
+    let costumes = data.soldier_costumes[0];
+    let soldiers = [0, 1].map(|k| Actor::load(&a, 259 + 4 * costumes[k].min(3)).unwrap());
+    let mut game = Game::load(&a, [MODEL_131, 259 + 4 * costumes[0].min(3)]).unwrap();
+    game.round_frames = kumite_game::force::CLOCK;
+    let mut bout = Bout::new(game, kumite_game::ai_data(&a).unwrap(), 1, false);
+    bout.force = true;
+    let mut st = ForceStage::new(data, 1, soldiers, 7 * 4, 7, 0, 0, 0, 0);
+    st.setup(&mut bout.game);
+    st.widen(&mut bout.game);
+    bout.game.join_partner(&Actor::load(&a, MODEL_71).unwrap());
+    let (mut most, mut spawned) = (0, false);
+    for frame in 0..60 * 30 {
+        // both walk on, so the stage's soldiers come
+        let pad = if frame % 120 < 90 { Pad { right: true, ..Pad::default() } } else { Pad::default() };
+        bout.partner_pad = pad;
+        bout.step([pad, Pad::default()]);
+        st.step(&mut bout.game, bout.phase == Phase::Fight, false);
+        let f = &bout.game.fight;
+        let in_play = (0..f.actor_count()).filter(|&i| !kumite_sim::Fight::is_player(i) && f.actor(i).is_some_and(|s| !s.inactive)).count();
+        most = most.max(in_play);
+        spawned |= in_play > 0;
+    }
+    assert!(spawned, "soldiers came on");
+    assert!(most <= 2, "a pair has at most two soldiers at once: {most}");
+}
