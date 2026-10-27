@@ -4408,11 +4408,16 @@ impl App {
         let mut browser_action = None;
         #[cfg(not(target_arch = "wasm32"))]
         let (mut dialog_action, mut status_action) = (None, None);
-        // Android: the on-screen pad over it all; the Game data button on the title and the main menu
+        // Android: the on-screen pad over it all (or its editor, the panel's changes to it); the Game data and Touch
+        // controls buttons on the title and the main menu, Touch controls in a fight's pause
         #[cfg(target_os = "android")]
-        let touch = self.gamepads.as_ref().map(|g| g.touch.clone()).filter(|t| t.shown);
+        let mut touch = self.gamepads.as_ref().map(|g| g.touch.clone()).filter(|t| t.shown || t.edit.is_some());
         #[cfg(target_os = "android")]
-        let (at_title, mut game_data) = (matches!(self.screen, Some(Screen::Title { .. } | Screen::Menu(_))), false);
+        let at_title = matches!(self.screen, Some(Screen::Title { .. } | Screen::Menu(_)));
+        #[cfg(target_os = "android")]
+        let in_pause = self.fight.as_ref().is_some_and(|f| f.pause.is_some()) || self.tag.as_ref().is_some_and(|t| t.pause.is_some());
+        #[cfg(target_os = "android")]
+        let (mut top, mut panel, mut chosen_size) = (None, None, None);
         let result = match self.egui.as_mut() {
             Some(egui) => {
                 if self.art.is_none() {
@@ -4592,15 +4597,21 @@ impl App {
                     debug.toasts(ctx);
                     #[cfg(target_os = "android")]
                     {
-                        if let Some(t) = &touch {
+                        if let Some(t) = touch.as_mut() {
                             t.draw(ctx, size[0] as f32, size[1] as f32);
+                            if t.edit.is_some() {
+                                panel = touchpad::panel(ctx, t, &mut chosen_size);
+                            }
                         }
-                        game_data |= at_title && android::data_button(ctx);
+                        if touch.as_ref().is_none_or(|t| t.edit.is_none()) && (at_title || in_pause) {
+                            top = android::top_buttons(ctx, at_title);
+                        }
                     }
                 });
                 #[cfg(target_os = "android")]
                 {
-                    self.game_data |= game_data;
+                    let dp = self.window.as_ref().map_or(1.0, |w| w.scale_factor() as f32);
+                    android::touch_ui(self.gamepads.as_mut(), &mut self.game_data, &mut self.debug, android::TouchFrame { touch, top, panel, chosen_size, size: [size[0] as f32, size[1] as f32], dp });
                 }
                 self.debug.ui_ms = t.elapsed().as_secs_f32() * 1000.0;
                 r.render_with(&cam, &sky, &statics, &models, particles.as_ref(), &lines, Some(&mut frame))
@@ -5597,7 +5608,12 @@ impl App {
         #[cfg(target_os = "android")]
         if let WindowEvent::KeyboardInput { device_id, event: KeyEvent { physical_key, state, repeat, .. }, .. } = &event {
             if *physical_key == android::BACK {
-                if *state == ElementState::Pressed && !repeat && !self.input_key(0, Key::Back) {
+                // (the touch controls' editor open: back closes it)
+                if let Some(g) = self.gamepads.as_mut().filter(|g| g.touch.edit.is_some()) {
+                    if *state == ElementState::Pressed {
+                        android::close_touch_editor(g, &mut self.debug);
+                    }
+                } else if *state == ElementState::Pressed && !repeat && !self.input_key(0, Key::Back) {
                     event_loop.exit();
                 }
                 return;
@@ -5834,6 +5850,9 @@ impl App {
                     }
                 }
                 let steps = self.debug.steps_for(&mut self.lag, now - self.last, STEP);
+                // (Android, the touch controls' editor open: the game waits; online the others play on)
+                #[cfg(target_os = "android")]
+                let steps = if self.net.is_none() && self.gamepads.as_ref().is_some_and(|g| g.touch.edit.is_some()) { 0 } else { steps };
                 self.last = now;
                 for _ in 0..steps {
                     if self.debug.rewinding {

@@ -61,9 +61,82 @@ fn game(files: &Path) -> anyhow::Result<Box<App>> {
     app.map(Box::new).ok_or_else(|| anyhow::anyhow!("the game did not start"))
 }
 
-/// The Game data button (the title, the main menu): pressed.
-pub fn data_button(ctx: &egui::Context) -> bool {
-    egui::Area::new(egui::Id::new("game_data_button")).anchor(egui::Align2::CENTER_TOP, [0.0, 8.0]).show(ctx, |ui| ui.button("Game data").clicked()).inner
+/// The buttons at the top centre: Game data (on the title and the main menu: `with_data`) and Touch controls (there,
+/// and in a fight's pause).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TopButton {
+    GameData,
+    TouchControls,
+}
+
+/// What a frame of the on-screen pad's UI gave: the pad as drawn (the editor's panel changed it), the top button and
+/// the panel's button pressed, the chosen control's size set; the screen's size and pixels to a dp.
+pub struct TouchFrame {
+    pub touch: Option<crate::touchpad::TouchPad>,
+    pub top: Option<TopButton>,
+    pub panel: Option<crate::touchpad::PanelAction>,
+    pub chosen_size: Option<f32>,
+    pub size: [f32; 2],
+    pub dp: f32,
+}
+
+/// A frame of the pad's UI applied: the panel's changes (Reset and Done saved: per device), the editor opened, the
+/// Game data screen asked for.
+pub fn touch_ui(pads: Option<&mut crate::gamepad::Gamepads>, game_data: &mut bool, debug: &mut crate::debug::Debug, f: TouchFrame) {
+    use crate::touchpad::{Edit, PanelAction, Settings};
+    let Some(g) = pads else { return };
+    if let Some(t) = f.touch.filter(|t| t.edit.is_some()) {
+        g.touch.settings = t.settings;
+    }
+    if let Some(s) = f.chosen_size {
+        g.touch.size_chosen(s, f.size[0], f.size[1], f.dp);
+    }
+    match f.panel {
+        Some(PanelAction::Reset) => {
+            g.touch.settings = Settings { stick: g.touch.settings.stick, ..Settings::default() };
+            save_touch(g, debug);
+        }
+        Some(PanelAction::Done) => close_touch_editor(g, debug),
+        None => {}
+    }
+    match f.top {
+        Some(TopButton::GameData) => *game_data = true,
+        Some(TopButton::TouchControls) => {
+            g.lift_fingers();
+            g.touch.edit = Some(Edit::default());
+        }
+        None => {}
+    }
+}
+
+/// The touch controls' editor closed, its layout saved.
+pub fn close_touch_editor(g: &mut crate::gamepad::Gamepads, debug: &mut crate::debug::Debug) {
+    g.touch.edit = None;
+    save_touch(g, debug);
+}
+
+fn save_touch(g: &crate::gamepad::Gamepads, debug: &mut crate::debug::Debug) {
+    if let Err(e) = g.save_touch() {
+        debug.say(format!("the touch controls could not be saved: {e:#}"));
+    }
+}
+
+/// The top buttons drawn; the one pressed.
+pub fn top_buttons(ctx: &egui::Context, with_data: bool) -> Option<TopButton> {
+    let area = egui::Area::new(egui::Id::new("game_data_button")).anchor(egui::Align2::CENTER_TOP, [0.0, 8.0]);
+    area.show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            let data = with_data && ui.button("Game data").clicked();
+            let touch = ui.button("Touch controls").clicked();
+            if data {
+                Some(TopButton::GameData)
+            } else {
+                touch.then_some(TopButton::TouchControls)
+            }
+        })
+        .inner
+    })
+    .inner
 }
 
 struct Root {

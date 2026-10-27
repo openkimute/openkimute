@@ -5,7 +5,7 @@
 
 use crate::controls::{merge, raw_menu_key, Controls, PadButton, Step};
 use crate::menu::Key;
-use crate::touchpad::TouchPad;
+use crate::touchpad::{Settings, TouchPad};
 use kumite_sim::input::Pad;
 use winit::event::DeviceId;
 use winit::keyboard::{KeyCode, NativeKeyCode, PhysicalKey};
@@ -53,8 +53,18 @@ pub struct Gamepads {
 }
 
 impl Gamepads {
+    /// (the player's touch controls as saved on this device)
     pub fn new() -> Self {
-        Self { pads: Vec::new(), touch: TouchPad::default(), pressed: Vec::new(), tapped: [Pad::default(); 4], steps: [Step::default(); 4] }
+        let settings = std::fs::read_to_string(touch_file()).map(|t| Settings::from_json(&t)).unwrap_or_default();
+        let mut touch = TouchPad::default();
+        touch.settings = settings;
+        Self { pads: Vec::new(), touch, pressed: Vec::new(), tapped: [Pad::default(); 4], steps: [Step::default(); 4] }
+    }
+
+    /// The touch controls' settings saved on this device (the app's internal folder).
+    pub fn save_touch(&self) -> anyhow::Result<()> {
+        std::fs::write(touch_file(), self.touch.settings.to_json())?;
+        Ok(())
     }
 
     /// The seat of pad `device`; a new one for a press (a pad joins with its first press).
@@ -92,7 +102,7 @@ impl Gamepads {
         if !self.touch.touch(id, phase, x, y, w, h, dp) {
             return false;
         }
-        let now = self.touch.held(dp);
+        let now = self.touch.held(w, h, dp);
         let Some(p) = self.seat(None, !now.is_empty()) else { return true };
         let held = &mut self.pads[p].1;
         self.pressed.extend(now.iter().filter(|b| !held.contains(b)).map(|&b| (p, b)));
@@ -140,4 +150,9 @@ impl Gamepads {
         self.tapped = [Pad::default(); 4];
         out
     }
+}
+
+/// Where the touch controls are kept (beside the save: per device, not in replays).
+fn touch_file() -> std::path::PathBuf {
+    crate::save::save_dir().join("touch_controls.json")
 }
