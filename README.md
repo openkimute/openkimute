@@ -236,6 +236,7 @@ run's artifacts, named `vX.Y.Z-dev.<commit>`.
 | `windows-amd64`, `windows-arm64` | C runtime linked in (`.cargo/config.toml`): no VC++ redistributable; the icon is in the `.exe` |
 | `macos-universal` | `OpenKumite.app` (`packaging/macos/bundle.sh`): one arm64 + x86_64 binary with its icon, macOS 11+ |
 | `web` | the browser build (`web/build.sh`) |
+| `android-arm64.apk` | the Android build (`packaging/android/build.sh`), Android 8+, signed with the project's release key so each release updates the last |
 
 The game is not a static musl binary on Linux: a static program cannot load libraries, and the game needs the
 system's Vulkan / OpenGL and X11 / Wayland libraries to draw.

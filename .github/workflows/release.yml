@@ -259,10 +259,48 @@ jobs:
           name: web
           path: openkumite-*.zip
 
+  # the Android APK (packaging/android/build.sh), signed with the release key (the repository's secrets): a phone
+  # updates the installed app only from an APK signed by the same key. A tag without the key fails; a run by hand
+  # without it signs with a debug key
+  android:
+    needs: version
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+      - name: The APK, signed with the release key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            export ANDROID_KEYSTORE="$RUNNER_TEMP/release.jks"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "::error::no release key (ANDROID_KEYSTORE_BASE64): a debug-signed APK could not update the last one"
+            exit 1
+          fi
+          ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" sh packaging/android/build.sh
+          rm -f "$RUNNER_TEMP/release.jks"
+          "$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -1)/apksigner" verify --print-certs target/android/openkumite.apk | grep -i "signer #1 certificate DN"
+          cp target/android/openkumite.apk "openkumite-$TAG-android-arm64.apk"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android
+          path: openkumite-*-android-arm64.apk
+
   release:
     # (a tag only: a run by hand keeps its files as the run's artifacts)
     if: github.ref_type == 'tag'
-    needs: [version, linux, alpine, windows, macos, wasm]
+    needs: [version, linux, alpine, windows, macos, wasm, android]
     env:
       TAG: ${{ needs.version.outputs.tag }}
     runs-on: ubuntu-latest
@@ -299,6 +337,7 @@ jobs:
           | \`.apk\` | Alpine (its own musl build): \`sudo apk add --allow-untrusted openkumite_*.apk\` |
           | \`openkumite-$TAG-windows-amd64.zip\`, \`-windows-arm64\` | Windows 10 and 11 |
           | \`openkumite-$TAG-macos-universal.tar.gz\` | macOS 11 and newer, Apple Silicon and Intel: OpenKumite.app |
+          | \`openkumite-$TAG-android-arm64.apk\` | Android 8 and newer, 64-bit ARM phones and tablets: install it, then choose the converted folder on its first screen |
           | \`openkumite-$TAG-web.zip\` | the game in the browser, to serve from a site (with the converted \`assets/\` beside it) |
           | \`SHA256SUMS\` | the checksums of the files above |
 

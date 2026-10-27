@@ -1,6 +1,7 @@
 #!/bin/sh
 # The Android build: target/android/openkumite.apk, for arm64 phones, tablets and TV boxes (and an arm64 emulator),
-# signed with the SDK's debug key (~/.android/debug.keystore, made if missing). The game is libopenkumite.so in a
+# signed with the release key when ANDROID_KEYSTORE names it (releases), else the SDK's debug key
+# (~/.android/debug.keystore, made if missing). The game is libopenkumite.so in a
 # NativeActivity (AndroidManifest.xml; OpenKumiteActivity.java, its one Java class, made into classes.dex with javac
 # and d8: no Gradle). Needs the Android SDK (ANDROID_HOME: build-tools, a platform), its NDK (ANDROID_NDK_HOME),
 # cargo-ndk (cargo install cargo-ndk) and a JDK (javac, keytool, apksigner).
@@ -25,11 +26,19 @@ javac -nowarn --release 17 -classpath "$platform" -d "$tmp/classes" packaging/an
 "$tools/d8" --min-api 26 --lib "$platform" --output "$tmp/apk" $(find "$tmp/classes" -name '*.class')
 (cd "$tmp/apk" && zip -q -r ../base.apk lib classes.dex)
 "$tools/zipalign" -f -p 4 "$tmp/base.apk" "$tmp/aligned.apk"
-key=$HOME/.android/debug.keystore
-if [ ! -f "$key" ]; then
-    mkdir -p "$HOME/.android"
-    keytool -genkeypair -keystore "$key" -storepass android -alias androiddebugkey -keypass android -keyalg RSA \
-        -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+# the release key (ANDROID_KEYSTORE, its ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS: a release's APK updates an
+# installed one only when signed by the same key), else the SDK's debug key (made if missing)
+if [ -n "${ANDROID_KEYSTORE:-}" ]; then
+    : "${ANDROID_KEYSTORE_PASSWORD:?the password of the release keystore}"
+    "$tools/apksigner" sign --ks "$ANDROID_KEYSTORE" --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+        --ks-key-alias "${ANDROID_KEY_ALIAS:-openkumite}" --out "$target/android/openkumite.apk" "$tmp/aligned.apk"
+else
+    key=$HOME/.android/debug.keystore
+    if [ ! -f "$key" ]; then
+        mkdir -p "$HOME/.android"
+        keytool -genkeypair -keystore "$key" -storepass android -alias androiddebugkey -keypass android -keyalg RSA \
+            -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+    fi
+    "$tools/apksigner" sign --ks "$key" --ks-pass pass:android --out "$target/android/openkumite.apk" "$tmp/aligned.apk"
 fi
-"$tools/apksigner" sign --ks "$key" --ks-pass pass:android --out "$target/android/openkumite.apk" "$tmp/aligned.apk"
 echo "built $target/android/openkumite.apk"
