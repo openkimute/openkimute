@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_assets"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "glam",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_fs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_game"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "glam",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_net"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bincode",
  "ggrs",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "kumite_sim"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "glam",

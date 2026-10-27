@@ -55,7 +55,8 @@ gilrs = "0.11"
 # the system's file dialogs (replays exported and imported, videos saved); on Linux the desktop's portal, no GTK
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 
-[target.'cfg(all(target_arch = "aarch64", not(target_os = "android")))'.dependencies]
+# (not Windows: MSVC's cl does not take rav1e's .S assembly, and the release's Windows ARM64 build failed on it)
+[target.'cfg(all(target_arch = "aarch64", not(any(target_os = "android", target_os = "windows"))))'.dependencies]
 rav1e = { version = "0.8", default-features = false, features = ["threading", "asm"] }
 
 # Android (packaging/android): the game in a NativeActivity, its log in logcat, its Java side (the pickers) through
