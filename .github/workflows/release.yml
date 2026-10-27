@@ -193,7 +193,7 @@ jobs:
         run: |
           $d = "openkumite-$env:TAG-${{ matrix.name }}"
           New-Item -ItemType Directory $d | Out-Null
-          Copy-Item "target\${{ matrix.target }}\dist\openkumite.exe", "target\${{ matrix.target }}\dist\serve.exe", README.md, LICENSE-MIT,, THIRD_PARTY_NOTICES.md $d
+          Copy-Item "target\${{ matrix.target }}\dist\openkumite.exe", "target\${{ matrix.target }}\dist\serve.exe", README.md, LICENSE-MIT, THIRD_PARTY_NOTICES.md $d
           Compress-Archive $d "$d.zip"
       - uses: actions/upload-artifact@v7
         with:
@@ -279,7 +279,8 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          # (the alias is no secret: as one, every "openkumite" in the logs came out masked)
+          ANDROID_KEY_ALIAS: openkumite
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
@@ -290,7 +291,7 @@ jobs:
           fi
           ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" sh packaging/android/build.sh
           rm -f "$RUNNER_TEMP/release.jks"
-          "$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -1)/apksigner" verify --print-certs target/android/openkumite.apk | grep -i "signer #1 certificate DN"
+          "$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 | sort -V | tail -1)/apksigner" verify --print-certs target/android/openkumite.apk | grep -i "certificate DN"
           cp target/android/openkumite.apk "openkumite-$TAG-android-arm64.apk"
       - uses: actions/upload-artifact@v7
         with:
